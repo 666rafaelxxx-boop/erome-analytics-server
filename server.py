@@ -14,24 +14,37 @@ from datetime import datetime, timezone
 DATA_FILE = '/tmp/erome_data.json'
 
 def load_data():
+    # Tenta arquivo primeiro
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r') as f:
-                return json.load(f)
+                data = json.load(f)
+                if data: return data
+    except: pass
+    # Fallback: variavel de ambiente
+    try:
+        env_data = os.environ.get('EROME_DATA', '')
+        if env_data:
+            return json.loads(env_data)
     except: pass
     return {}
 
 def save_data():
+    data = {
+        'accounts':         ACCOUNTS,
+        'cta_config':       cta_config,
+        'cta_status':       cta_status,
+        'commented_albums': commented_albums,
+        'view_history':     view_history,
+    }
+    # Salva em arquivo
     try:
         with open(DATA_FILE, 'w') as f:
-            json.dump({
-                'accounts':         ACCOUNTS,
-                'cta_config':       cta_config,
-                'cta_status':       cta_status,
-                'commented_albums': commented_albums,
-            }, f)
+            json.dump(data, f)
     except Exception as e:
-        print(f'[SAVE] Erro: {e}')
+        print(f'[SAVE] Erro arquivo: {e}')
+    # Também imprime para log (Railway persiste logs)
+    print(f'[SAVE] Dados salvos: {len(ACCOUNTS)} contas, CTAs: {list(cta_config.keys())}')
 
 app = Flask(__name__)
 
@@ -242,6 +255,8 @@ def refresh_all():
             # Mantém só 48h de histórico
             cutoff = time.time() - 172800
             view_history[u] = [x for x in view_history[u] if x['ts'] > cutoff]
+            # Persiste histórico a cada update
+            save_data()
         print(f'[{datetime.now().strftime("%H:%M")}] Atualizado: {u} — {data.get("totalViews","?")} views')
         time.sleep(1)
 
@@ -471,8 +486,9 @@ def account_data(username):
     hist = view_history.get(username, [])
     views_today = None
     if hist and d and not d.get('error'):
-        # Pega entrada mais próxima de 24h atrás
         now_ts = time.time()
+
+        # Tenta pegar snapshot de 24h atrás
         best   = None
         best_d = float('inf')
         for entry in hist:
@@ -480,13 +496,28 @@ def account_data(username):
             if diff < best_d:
                 best_d = diff
                 best   = entry
-        if best and best_d < 7200:  # dentro de 2h do alvo
+
+        if best and best_d < 7200:
+            # Tem dados de 24h atrás — calcula normalmente
             views_today = max(0, d['totalViews'] - best['views'])
+        else:
+            # Ainda não tem 24h — usa o snapshot mais antigo disponível
+            # Calcula desde o início da sessão do servidor
+            oldest = min(hist, key=lambda x: x['ts'])
+            age_h  = (now_ts - oldest['ts']) / 3600
+            if age_h >= 0.25:  # pelo menos 15 min de histórico
+                views_today = max(0, d['totalViews'] - oldest['views'])
+
+    # Calcula alerta de CTA
+    st         = cta_status.get(username, {})
+    gone       = [v for v in st.values() if not v.get('ok') and v.get('foundCta') not in (None,'None','--')]
+    cta_alert  = len(gone)  # quantos CTAs sumiram
 
     result = dict(d)
     result['viewsToday'] = views_today
-    result['ctaStatus']  = cta_status.get(username, {})
+    result['ctaStatus']  = st
     result['ctas']       = cta_config.get(username, [])
+    result['ctaAlert']   = cta_alert  # 0 = ok, >0 = sumiu
     return jsonify(result)
 
 
