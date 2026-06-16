@@ -96,16 +96,48 @@ def scrape_profile(username):
             if aid:
                 albums.append({'id': aid, 'title': title, 'href': href, 'views': views})
 
-        # albumCount from .user-info includes reposts
-        # Use len(albums) instead since we already filtered reposts
-        own_count = len(albums)
+        # Page 1 done — now paginate to get ALL albums
+        page = 2
+        while True:
+            try:
+                r2   = requests.get(f'https://www.erome.com/{username}?t=posts&page={page}', headers=HEADERS, timeout=10)
+                s2   = BeautifulSoup(r2.text, 'html.parser')
+                more = []
+                for el in s2.select('div.album[id^="album-"]'):
+                    if el.select_one('.album-user'):
+                        continue
+                    link  = el.select_one('a.album-link')
+                    href2 = link['href'] if link else None
+                    alt2  = ''
+                    img2  = el.select_one('img.album-thumbnail')
+                    if img2: alt2 = img2.get('alt', '')
+                    title2 = re.sub(r'#\S+$', '', alt2).strip() or 'Sem título'
+                    vraw2  = ''
+                    vspan2 = el.select_one('span.album-bottom-views')
+                    if vspan2: vraw2 = re.sub(r'[^\d.,KMBkmb]', '', vspan2.get_text())
+                    views2 = parse_num(vraw2)
+                    aid2   = el.get('id', '').replace('album-', '')
+                    if href2:
+                        m3 = re.search(r'/a/([a-zA-Z0-9]+)', href2)
+                        if m3: aid2 = m3.group(1)
+                    if aid2:
+                        albums.append({'id': aid2, 'title': title2, 'href': href2, 'views': views2})
+                        more.append(aid2)
+                # Check if there's a next page
+                has_next = bool(s2.select_one('a[rel="next"]') or s2.select('.pagination .page-item:not(.active) a[href*="page="]'))
+                if not has_next or not more:
+                    break
+                page += 1
+                time.sleep(0.5)
+            except:
+                break
 
         return {
             'username':    username,
             'avatar':      avatar,
             'totalViews':  total_views,
             'followers':   followers,
-            'albumCount':  own_count,
+            'albumCount':  len(albums),
             'albums':      albums,
             'fetchedAt':   datetime.now(timezone.utc).isoformat(),
             'error':       None,
