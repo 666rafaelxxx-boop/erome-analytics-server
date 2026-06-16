@@ -13,7 +13,8 @@ app = Flask(__name__)
 
 # ── CONFIGURAÇÃO ─────────────────────────────────────────────────
 ACCOUNTS   = []   # preenchido via POST /accounts
-cache      = {}   # {username: {data, updatedAt}}
+cache        = {}   # {username: {data, updatedAt}}
+view_history = {}   # {username: [{ts, views}, ...]} para calcular views de hoje
 cta_config = {}   # {username: [cta1, cta2, ...]}
 cta_status = {}   # {username: {albumId: {ok, checkedAt}}}
 
@@ -150,6 +151,14 @@ def refresh_all():
     for u in ACCOUNTS:
         data = scrape_profile(u)
         cache[u] = data
+        # Salva histórico de views para calcular views de hoje
+        if data and not data.get('error') and data.get('totalViews'):
+            if u not in view_history:
+                view_history[u] = []
+            view_history[u].append({'ts': time.time(), 'views': data['totalViews']})
+            # Mantém só 48h de histórico
+            cutoff = time.time() - 172800
+            view_history[u] = [x for x in view_history[u] if x['ts'] > cutoff]
         print(f'[{datetime.now().strftime("%H:%M")}] Atualizado: {u} — {data.get("totalViews","?")} views')
         time.sleep(1)
 
@@ -231,12 +240,30 @@ def account_data(username):
     """Retorna dados de uma conta específica"""
     d = cache.get(username)
     if not d:
-        # Busca na hora se não tem cache
         d = scrape_profile(username)
         cache[username] = d
-    d['ctaStatus'] = cta_status.get(username, {})
-    d['ctas']      = cta_config.get(username, [])
-    return jsonify(d)
+
+    # Calcula views de hoje (diferença entre cache atual e cache de 24h atrás)
+    hist = view_history.get(username, [])
+    views_today = None
+    if hist and d and not d.get('error'):
+        # Pega entrada mais próxima de 24h atrás
+        now_ts = time.time()
+        best   = None
+        best_d = float('inf')
+        for entry in hist:
+            diff = abs(now_ts - entry['ts'] - 86400)
+            if diff < best_d:
+                best_d = diff
+                best   = entry
+        if best and best_d < 7200:  # dentro de 2h do alvo
+            views_today = max(0, d['totalViews'] - best['views'])
+
+    result = dict(d)
+    result['viewsToday'] = views_today
+    result['ctaStatus']  = cta_status.get(username, {})
+    result['ctas']       = cta_config.get(username, [])
+    return jsonify(result)
 
 
 @app.route('/accounts', methods=['POST'])
