@@ -96,12 +96,16 @@ def scrape_profile(username):
             if aid:
                 albums.append({'id': aid, 'title': title, 'href': href, 'views': views})
 
+        # albumCount from .user-info includes reposts
+        # Use len(albums) instead since we already filtered reposts
+        own_count = len(albums)
+
         return {
             'username':    username,
             'avatar':      avatar,
             'totalViews':  total_views,
             'followers':   followers,
-            'albumCount':  album_count,
+            'albumCount':  own_count,
             'albums':      albums,
             'fetchedAt':   datetime.now(timezone.utc).isoformat(),
             'error':       None,
