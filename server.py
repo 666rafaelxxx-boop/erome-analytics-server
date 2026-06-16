@@ -532,5 +532,3 @@ def admin_remove_cta():
     if u in cta_config and cta in cta_config[u]:
         cta_config[u].remove(cta)
     return redirect('/admin')
-
-
