@@ -340,130 +340,151 @@ def manual_refresh():
 
 @app.route('/admin')
 def admin():
-    rows = ''
-    for u in ACCOUNTS:
-        ctas = ', '.join(cta_config.get(u, []))
-        st   = cta_status.get(u, {})
-        gone = sum(1 for v in st.values() if not v.get('ok'))
-        ok_n = sum(1 for v in st.values() if v.get('ok'))
-        sbadge = f'<span style="color:#ff2244">🔴 {gone} sumiu(ram)</span>' if gone else (f'<span style="color:#22cc55">🟢 {ok_n} ok</span>' if ok_n else '<span style="color:#888">⏳ verificando</span>')
-        rows += '<tr><td>@' + u + '</td><td>' + (ctas or '—') + '</td><td>' + sbadge + '</td><td><a href="/remove?account=' + u + '">✕ Remover</a></td></tr>'
-
-    cta_rows = ''
+    # Coleta status de CTAs por album
+    gone_albums = []
+    ok_albums   = []
     for u in ACCOUNTS:
         for aid, v in cta_status.get(u, {}).items():
-            ico = '🟢' if v.get('ok') else '🔴'
-            col = '#22cc55' if v.get('ok') else '#ff2244'
-            cta_rows += f'<div style="font-size:12px;padding:6px 0;border-bottom:1px solid #111"><span style="color:{col}">{ico}</span> @{u} — álbum <code>{aid}</code> — CTA: <strong>{v.get("foundCta","—")}</strong> — {str(v.get("checkedAt",""))[:16]}</div>'
+            alb_title = next((a.get('title','') for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), aid)
+            alb_href  = next((a.get('href','')  for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
+            entry = {'user':u,'aid':aid,'title':alb_title,'href':alb_href,
+                     'ok':v.get('ok'),'foundCta':v.get('foundCta','--'),'checkedAt':str(v.get('checkedAt',''))[:16]}
+            if not v.get('ok'): gone_albums.append(entry)
+            else: ok_albums.append(entry)
 
-    html = f"""<!DOCTYPE html>
+    def alb_row(e, gone=False):
+        col  = '#ff4466' if gone else '#59E38A'
+        icon = 'SUMIU' if gone else 'OK'
+        t    = e['title'][:55]+'...' if len(e['title'])>55 else e['title']
+        link = ('<a href="' + e['href'] + '" target="_blank" style="color:' + col + ';text-decoration:none">' + t + '</a>') if e['href'] else t
+        return ('<div style="padding:12px 0;border-bottom:1px solid #111">'
+            + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
+            + '<span style="background:' + ('#2e0008' if gone else '#0d2e1a') + ';color:' + col + ';font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">' + icon + '</span>'
+            + link
+            + '</div>'
+            + '<div style="font-size:11px;color:#555">@' + e['user'] + ' - CTA: ' + str(e['foundCta']) + ' - ' + e['checkedAt'] + '</div>'
+            + '</div>')
+
+    gone_html = ''.join(alb_row(e,True) for e in gone_albums) or '<div style="color:#444;font-size:13px;padding:12px 0">Nenhum CTA removido detectado.</div>'
+    ok_html   = ''.join(alb_row(e,False) for e in ok_albums[:10]) or '<div style="color:#444;font-size:13px;padding:12px 0">Aguardando verificacao...</div>'
+
+    # Tags de CTA
+    tags_html = ''
+    for u in ACCOUNTS:
+        ctas = cta_config.get(u, [])
+        tags = ''.join(
+            '<span style="display:inline-flex;align-items:center;gap:6px;background:#0a0a0a;border:1px solid #ff224430;border-radius:20px;padding:5px 14px;margin:3px">'
+            + '<span style="font-size:13px;color:#fff;font-family:monospace">' + cta + '</span>'
+            + '<a href="/admin/remove-cta?account=' + u + '&cta=' + cta + '" style="color:#ff224466;text-decoration:none;font-size:15px;line-height:1;margin-left:4px">x</a>'
+            + '</span>'
+            for cta in ctas
+        )
+        tags_html += '<div style="margin-bottom:14px"><div style="font-size:11px;color:#ff224488;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:8px">@' + u + '</div><div>' + (tags if tags else '<span style="color:#333;font-size:12px">Nenhum CTA cadastrado</span>') + '</div></div>'
+
+    alert = ''
+    if gone_albums:
+        alert = '<div style="background:#1a0008;border:1px solid #ff2244;border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#ff8899">Atencao: ' + str(len(gone_albums)) + ' album(ns) com CTA removido!</div>'
+
+    accs_html = ''
+    for u in ACCOUNTS:
+        accs_html += ('<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #111">'
+            + '<span style="color:#ff2244;font-weight:600;font-size:14px">@' + u + '</span>'
+            + '<a href="/remove?account=' + u + '" style="color:#ff224455;text-decoration:none;font-size:12px">Remover conta</a>'
+            + '</div>')
+
+    html = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Erome Analytics Admin</title>
+<title>Erome Analytics</title>
 <style>
-body{{font-family:Inter,sans-serif;background:#0d0d0d;color:#f0f0f0;padding:20px;max-width:800px;margin:0 auto}}
-h1{{color:#ff2244;font-size:20px;margin-bottom:4px}}
-h2{{color:#ff224488;font-size:11px;text-transform:uppercase;letter-spacing:.1em;margin:24px 0 10px}}
-table{{width:100%;border-collapse:collapse}}
-th,td{{padding:10px 12px;text-align:left;border-bottom:1px solid #1a1a1a;font-size:13px}}
-th{{color:#ff224466;font-size:10px;text-transform:uppercase;letter-spacing:.1em}}
-td a{{color:#ff2244;text-decoration:none}}
-.card{{background:#111;border:1px solid #ff224420;border-radius:12px;padding:16px;margin-bottom:14px}}
-.row{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}}
-input{{background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;flex:1;min-width:140px;outline:none}}
-input:focus{{border-color:#ff2244}}
-button,.btn{{background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:8px;color:#fff;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700;text-decoration:none;display:inline-block}}
-.hint{{font-size:11px;color:#333;margin-top:6px;line-height:1.6}}
-.link{{background:#111;border:1px solid #ff224430;color:#ff2244;border-radius:8px;padding:7px 14px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block;margin-bottom:12px}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#f0f0f0;padding:20px;max-width:660px;margin:0 auto}
+h1{color:#fff;font-size:18px;font-weight:700;margin-bottom:16px}
+h1 span{color:#ff2244}
+.sec{margin-bottom:22px}
+.sec-title{font-size:10px;font-weight:600;color:#ff224466;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
+.card{background:#111;border:1px solid #ff224418;border-radius:12px;padding:16px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
+input{background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;flex:1;min-width:120px;outline:none}
+input:focus{border-color:#ff2244}
+input::placeholder{color:#2a2a2a}
+input[readonly]{color:#555}
+.btn{background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:8px;color:#fff;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap}
+.btn-sm{background:#111;border:1px solid #ff224430;border-radius:8px;color:#ff2244;padding:6px 14px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block}
+.hint{font-size:11px;color:#333;margin-top:8px;line-height:1.5}
+.topbar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
 </style>
 </head>
 <body>
-<h1>⬛ Erome Analytics</h1>
-<a href="/admin" class="link">↺ Atualizar página</a>
-<a href="/refresh" class="link">⚡ Forçar refresh dos dados</a>
-
-<h2>Contas monitoradas</h2>
-<div class="card">
-<table>
-<tr><th>Conta</th><th>CTAs ativos</th><th>Status</th><th></th></tr>
-{rows if rows else '<tr><td colspan="4" style="color:#444;font-size:12px">Nenhuma conta adicionada ainda</td></tr>'}
-</table>
+<h1>Erome <span>Analytics</span></h1>
+<div class="topbar">
+<a href="/admin" class="btn-sm">Atualizar pagina</a>
+<a href="/refresh" class="btn-sm">Forcar refresh dados</a>
 </div>
-
-<h2>Adicionar conta</h2>
+""" + alert + """
+<div class="sec">
+<div class="sec-title">Minha conta</div>
 <div class="card">
-<form action="/admin/add" method="POST">
+""" + (accs_html if accs_html else '<div style="color:#444;font-size:13px">Nenhuma conta ainda</div>') + """
+<form action="/admin/add" method="POST" style="margin-top:12px">
 <div class="row">
 <input name="account" placeholder="Username (ex: ModoNoturnoBR)" required>
-<input name="ctas" placeholder="CTAs separados por vírgula (ex: NEZBRASIL, CTANOVO)">
-<button type="submit">＋ Adicionar</button>
+<button type="submit" class="btn">+ Adicionar</button>
 </div>
-<div class="hint">💡 Adicione todos os seus CTAs ativos separados por vírgula.</div>
 </form>
 </div>
+</div>
 
-<h2>Atualizar CTAs de uma conta</h2>
+<div class="sec">
+<div class="sec-title">Meus CTAs</div>
 <div class="card">
-<form action="/admin/ctas" method="POST">
+""" + (tags_html if tags_html else '<div style="color:#444;font-size:13px;margin-bottom:12px">Adicione uma conta primeiro</div>') + """
+<form action="/admin/add-cta" method="POST" style="margin-top:4px">
 <div class="row">
-<input name="account" placeholder="Username" required>
-<input name="ctas" placeholder="Novos CTAs separados por vírgula" required>
-<button type="submit">Atualizar</button>
+""" + ('<input name="account" value="' + ACCOUNTS[0] + '" readonly style="max-width:180px;color:#555">' if len(ACCOUNTS)==1 else '<input name="account" placeholder="Username" required style="max-width:180px">') + """
+<input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required>
+<button type="submit" class="btn">+ Adicionar CTA</button>
 </div>
-<div class="hint">⚠️ Substitui todos os CTAs da conta. Use quando mudar seu CTA no Telegram.</div>
+<div class="hint">Adicione uma palavra por vez. Clique no x para remover.</div>
 </form>
 </div>
-
-<h2>Status dos CTAs</h2>
-<div class="card">
-{cta_rows if cta_rows else '<div style="color:#444;font-size:12px">Ainda verificando... aguarde até 10 minutos.</div>'}
 </div>
 
-<div style="font-size:10px;color:#1e1e1e;margin-top:20px">
-Dados: cada 15min · CTAs: cada 10min · <a href="/" style="color:#333">API JSON</a>
+<div class="sec">
+<div class="sec-title">Albums com CTA removido</div>
+<div class="card">""" + gone_html + """</div>
+</div>
+
+<div class="sec">
+<div class="sec-title">Albums com CTA presente (ultimos 10)</div>
+<div class="card">""" + ok_html + """</div>
+</div>
+
+<div style="font-size:10px;color:#1e1e1e;margin-top:16px;text-align:center">
+Dados: 15min - CTAs: 10min - <a href="/" style="color:#222">API JSON</a>
 </div>
 </body>
 </html>"""
     return html
 
-@app.route('/admin/add', methods=['POST'])
-def admin_add():
-    from flask import request
-    u    = request.form.get('account','').strip()
-    craw = request.form.get('ctas','').strip()
-    if u and u not in ACCOUNTS:
-        ACCOUNTS.append(u)
-    if craw and u:
-        cta_config[u] = [x.strip().upper() for x in craw.split(',') if x.strip()]
-    threading.Thread(target=refresh_all, daemon=True).start()
-    from flask import redirect
-    return redirect('/admin')
-
-@app.route('/admin/ctas', methods=['POST'])
-def admin_ctas():
+@app.route('/admin/add-cta', methods=['POST'])
+def admin_add_cta():
     from flask import request, redirect
-    u    = request.form.get('account','').strip()
-    craw = request.form.get('ctas','').strip()
-    if u and craw:
-        cta_config[u] = [x.strip().upper() for x in craw.split(',') if x.strip()]
+    u   = request.form.get('account','').strip()
+    cta = request.form.get('cta','').strip().upper()
+    if u and cta:
+        if u not in cta_config: cta_config[u] = []
+        if cta not in cta_config[u]: cta_config[u].append(cta)
     threading.Thread(target=cta_refresh_all, daemon=True).start()
     return redirect('/admin')
 
-@app.route('/remove')
-def remove_account():
+@app.route('/admin/remove-cta')
+def admin_remove_cta():
     from flask import request, redirect
-    u = request.args.get('account','').strip()
-    if u in ACCOUNTS: ACCOUNTS.remove(u)
-    cta_config.pop(u, None)
-    cta_status.pop(u, None)
-    cache.pop(u, None)
+    u   = request.args.get('account','').strip()
+    cta = request.args.get('cta','').strip()
+    if u in cta_config and cta in cta_config[u]:
+        cta_config[u].remove(cta)
     return redirect('/admin')
-
-# ── START ─────────────────────────────────────────────────────────
-if __name__ == '__main__':
-    # Inicia loop em background
-    t = threading.Thread(target=background_loop, daemon=True)
-    t.start()
-    app.run(host='0.0.0.0', port=8080)
