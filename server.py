@@ -7,7 +7,31 @@ from bs4 import BeautifulSoup
 import time
 import threading
 import re
+import json
+import os
 from datetime import datetime, timezone
+
+DATA_FILE = '/tmp/erome_data.json'
+
+def load_data():
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r') as f:
+                return json.load(f)
+    except: pass
+    return {}
+
+def save_data():
+    try:
+        with open(DATA_FILE, 'w') as f:
+            json.dump({
+                'accounts':         ACCOUNTS,
+                'cta_config':       cta_config,
+                'cta_status':       cta_status,
+                'commented_albums': commented_albums,
+            }, f)
+    except Exception as e:
+        print(f'[SAVE] Erro: {e}')
 
 app = Flask(__name__)
 
@@ -268,13 +292,16 @@ def scan_page():
         def do_scan():
             for u in ACCOUNTS:
                 try:
-                    scan_status['progress'] = f'Buscando albuns de @{u}...'
-                    scan_status['pct']      = 5
-                    data = scrape_profile(u)
+                    # Busca TODOS os albuns com paginacao completa
+                    scan_status['progress'] = f'Buscando todos os albuns de @{u}...'
+                    scan_status['pct']      = 2
+                    data = scrape_profile(u)  # ja tem paginacao completa
                     if data and not data.get('error'):
                         cache[u] = data
-                    albs = (cache.get(u) or {}).get('albums', [])
+                        print(f'[SCAN] {len(data.get("albums",[]))} albuns encontrados para @{u}')
+                    albs  = (cache.get(u) or {}).get('albums', [])
                     total = len(albs)
+                    scan_status['progress'] = f'Verificando CTAs em {total} albuns de @{u}...'
                     scan_status['progress'] = f'Verificando {total} albuns de @{u}...'
 
                     ctas = cta_config.get(u, [])
@@ -313,6 +340,7 @@ def scan_page():
                             print(f'[SCAN] Erro {aid}: {ex}')
 
                     cta_status[u] = results
+                    save_data()  # persiste resultado
                     scan_status['progress'] = f'Concluido! {found_count} CTAs encontrados em {total} albuns de @{u}'
                     scan_status['pct']      = 100
                 except Exception as ex:
@@ -512,6 +540,7 @@ def push_cta_status():
                     'title': v.get('title',''),
                     'href':  v.get('href',''),
                 })
+        save_data()
         print(f'[PUSH] Status de {len(status)} CTAs recebido de @{username}')
     return __import__('flask').jsonify({'ok': True})
 
@@ -526,8 +555,8 @@ def sync_commented():
         commented_albums[username] = albums
         # Limpa status antigo para evitar falsos positivos
         cta_status[username] = {}
+        save_data()
         print(f'[SYNC] {len(albums)} albuns recebidos de @{username} — status resetado')
-        # Inicia verificacao imediata em thread separada
         threading.Thread(target=cta_refresh_all, daemon=True).start()
     return __import__('flask').jsonify({'ok': True, 'synced': len(albums)})
 
@@ -739,6 +768,7 @@ def admin_add_cta():
     if u and cta:
         if u not in cta_config: cta_config[u] = []
         if cta not in cta_config[u]: cta_config[u].append(cta)
+    save_data()
     threading.Thread(target=cta_refresh_all, daemon=True).start()
     return redirect('/admin')
 
@@ -749,6 +779,7 @@ def admin_remove_cta():
     cta = request.args.get('cta','').strip()
     if u in cta_config and cta in cta_config[u]:
         cta_config[u].remove(cta)
+    save_data()
     return redirect('/admin')
 
 
