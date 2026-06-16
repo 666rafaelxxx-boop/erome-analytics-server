@@ -18,6 +18,7 @@ view_history = {}   # {username: [{ts, views}, ...]} para calcular views de hoje
 cta_config = {}   # {username: [cta1, cta2, ...]}
 cta_status       = {}   # {username: {albumId: {ok, checkedAt}}}
 commented_albums = {}   # {username: [{id, title, href}]} — sincronizado pelo PC
+scan_status      = {'running': False, 'progress': '', 'started': '', 'finished': ''}
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -165,22 +166,25 @@ def check_ctas_for(username):
         try:
             r    = requests.get(href, headers=HEADERS, timeout=10)
             soup = BeautifulSoup(r.text, 'html.parser')
-            # Pega texto de todos os comentários
             comm_text = ' '.join(
                 el.get_text() for el in soup.select('.comment-text, .list-comment')
             ).lower()
-            found = next((c for c in ctas if c.lower() in comm_text), None)
+            found = next((ct for ct in ctas if ct.lower() in comm_text), None)
+            prev  = results.get(aid, {})
             results[aid] = {
                 'ok':        bool(found),
                 'foundCta':  found,
                 'checkedAt': datetime.now(timezone.utc).isoformat(),
             }
-            # Se usou scan independente, só mantém os que TEM CTA (não marca como sumiu os que nunca tiveram)
-            if not synced and not bool(found):
-                del results[aid]
+            # Só registra "sumiu" se antes estava OK
+            if prev.get('ok') and not bool(found):
+                print(f'[CTA] SUMIU em {aid} (@{username})')
+            # Se nunca teve CTA e scan geral, remove pra nao poluir
+            if not synced and not bool(found) and not prev.get('ok'):
+                if aid in results: del results[aid]
             time.sleep(0.3)
-        except:
-            pass
+        except Exception as ex:
+            print(f'[CTA] Erro album {aid}: {ex}')
 
     cta_status[username] = results
     return results
@@ -204,10 +208,13 @@ def refresh_all():
 
 
 def cta_refresh_all():
-    """Verifica CTAs (a cada 10 min)"""
+    """Verifica CTAs de todas as contas (a cada 10 min)"""
     for u in ACCOUNTS:
-        check_ctas_for(u)
-        print(f'[{datetime.now().strftime("%H:%M")}] CTAs verificados: {u}')
+        try:
+            check_ctas_for(u)
+            print(f'[{datetime.now().strftime("%H:%M")}] CTAs ok: @{u} — {len(cta_status.get(u,{}))} albuns')
+        except Exception as ex:
+            print(f'[CTA] Erro em @{u}: {ex}')
         time.sleep(1)
 
 
@@ -234,23 +241,31 @@ def index():
 @app.route('/scan')
 def manual_scan():
     """Força scan imediato de CTAs em todos os álbuns"""
-    from flask import redirect
+    from flask import redirect, request
+    scan_status['running'] = True
+    scan_status['started'] = datetime.now(timezone.utc).isoformat()
+    scan_status['progress'] = 'Iniciando...'
+
     def do_scan():
         for u in ACCOUNTS:
-            # Força busca atualizada dos álbuns
-            data = scrape_profile(u)
-            if data and not data.get('error'):
-                cache[u] = data
-            # Roda verificação de CTAs
-            import asyncio
             try:
-                loop = asyncio.new_event_loop()
-                loop.run_until_complete(check_ctas_for(u))
-                loop.close()
+                # Atualiza albuns primeiro
+                scan_status['progress'] = f'Buscando albuns de @{u}...'
+                data = scrape_profile(u)
+                if data and not data.get('error'):
+                    cache[u] = data
+                    scan_status['progress'] = f'Verificando CTAs em {len(data.get("albums",[]))} albuns...'
+                # Verifica CTAs
+                check_ctas_for(u)
+                scan_status['progress'] = f'Concluido @{u}: {len(cta_status.get(u,{}))} albuns verificados'
             except Exception as ex:
+                scan_status['progress'] = f'Erro: {ex}'
                 print(f'[SCAN] Erro: {ex}')
+        scan_status['running'] = False
+        scan_status['finished'] = datetime.now(timezone.utc).isoformat()
+
     threading.Thread(target=do_scan, daemon=True).start()
-    return redirect('/admin')
+    return redirect('/admin?scan=1')
 
 @app.route('/setup')
 def setup():
@@ -504,8 +519,9 @@ input::placeholder{color:#2a2a2a}
 <div class="topbar">
 <a href="/admin" class="btn-sm">Atualizar pagina</a>
 <a href="/refresh" class="btn-sm">Forcar refresh dados</a>
-<a href="/scan" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">Escanear CTAs agora</a>
+<a href="/scan" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">" + ('⏳ Escaneando...' if scan_status.get('running') else '🔍 Escanear CTAs agora') + "</a>
 </div>
+""" + (f'<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#22cc55">⏳ {scan_status["progress"]}</div>' if scan_status.get('running') or scan_status.get('progress') else '') + """
 """ + alert + """
 <div class="sec">
 <div class="sec-title">Minha conta</div>
