@@ -16,7 +16,8 @@ ACCOUNTS   = []   # preenchido via POST /accounts
 cache        = {}   # {username: {data, updatedAt}}
 view_history = {}   # {username: [{ts, views}, ...]} para calcular views de hoje
 cta_config = {}   # {username: [cta1, cta2, ...]}
-cta_status = {}   # {username: {albumId: {ok, checkedAt}}}
+cta_status       = {}   # {username: {albumId: {ok, checkedAt}}}
+commented_albums = {}   # {username: [{id, title, href}]} — sincronizado pelo PC
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -329,6 +330,21 @@ def set_ctas():
         cta_config[u] = [c.upper() for c in ctas]
     return jsonify({'ok': True, 'ctas': cta_config})
 
+
+@app.route('/sync-commented', methods=['POST'])
+def sync_commented():
+    """Recebe lista de álbuns comentados do script Tampermonkey"""
+    from flask import request
+    body     = request.json or {}
+    username = body.get('username', '').strip()
+    albums   = body.get('albums', [])
+    if username and albums:
+        commented_albums[username] = albums
+        print(f'[SYNC] {len(albums)} albuns comentados recebidos de @{username}')
+        # Inicia verificacao imediata
+        import threading
+        threading.Thread(target=lambda: __import__('asyncio').run(check_ctas_for(username)), daemon=True).start()
+    return __import__('flask').jsonify({'ok': True, 'synced': len(albums)})
 
 @app.route('/refresh')
 def manual_refresh():
