@@ -158,7 +158,7 @@ def check_ctas_for(username):
     if not ctas or not albums:
         return results
 
-    for album in albums[:20]:  # verifica top 20
+    for album in albums:  # verifica TODOS
         href = album.get('href')
         aid  = album.get('id')
         if not href or not aid:
@@ -237,6 +237,73 @@ def background_loop():
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'accounts': ACCOUNTS, 'ctas': cta_config})
+
+@app.route('/scan-page')
+def scan_page():
+    """Pagina de progresso do scan com auto-refresh"""
+    from flask import redirect
+    if not scan_status.get('running'):
+        # Inicia o scan
+        scan_status['running']  = True
+        scan_status['started']  = datetime.now(timezone.utc).isoformat()
+        scan_status['progress'] = 'Iniciando...'
+        scan_status['pct']      = 0
+        scan_status['finished'] = ''
+
+        def do_scan():
+            for u in ACCOUNTS:
+                try:
+                    scan_status['progress'] = f'Buscando albuns de @{u}...'
+                    scan_status['pct']      = 5
+                    data = scrape_profile(u)
+                    if data and not data.get('error'):
+                        cache[u] = data
+                    albs = (cache.get(u) or {}).get('albums', [])
+                    total = len(albs)
+                    scan_status['progress'] = f'Verificando {total} albuns de @{u}...'
+
+                    ctas = cta_config.get(u, [])
+                    results = dict(cta_status.get(u, {}))
+                    found_count = 0
+
+                    for idx, album in enumerate(albs):
+                        href = album.get('href')
+                        aid  = album.get('id')
+                        if not href or not aid:
+                            continue
+                        pct = 5 + int((idx / total) * 90)
+                        scan_status['pct']      = pct
+                        scan_status['progress'] = f'Album {idx+1}/{total} — {found_count} CTAs encontrados'
+                        try:
+                            r    = requests.get(href, headers=HEADERS, timeout=10)
+                            soup = BeautifulSoup(r.text, 'html.parser')
+                            txt  = ' '.join(el.get_text() for el in soup.select('.comment-text, .list-comment')).lower()
+                            found = next((ct for ct in ctas if ct.lower() in txt), None)
+                            prev  = results.get(aid, {})
+                            if found:
+                                found_count += 1
+                                results[aid] = {'ok': True, 'foundCta': found, 'checkedAt': datetime.now(timezone.utc).isoformat()}
+                            elif prev.get('ok'):
+                                results[aid] = {'ok': False, 'foundCta': None, 'checkedAt': datetime.now(timezone.utc).isoformat()}
+                                print(f'[SCAN] CTA SUMIU: {album.get("title",aid)}')
+                            # Nao registra albuns sem historico e sem CTA
+                            time.sleep(0.3)
+                        except Exception as ex:
+                            print(f'[SCAN] Erro {aid}: {ex}')
+
+                    cta_status[u] = results
+                    scan_status['progress'] = f'Concluido! {found_count} CTAs encontrados em {total} albuns de @{u}'
+                    scan_status['pct']      = 100
+                except Exception as ex:
+                    scan_status['progress'] = f'Erro: {ex}'
+                    print(f'[SCAN] Erro geral: {ex}')
+
+            scan_status['running']  = False
+            scan_status['finished'] = datetime.now(timezone.utc).isoformat()
+
+        threading.Thread(target=do_scan, daemon=True).start()
+
+    return redirect('/admin')
 
 @app.route('/scan')
 def manual_scan():
@@ -489,6 +556,28 @@ def admin():
         )
         cta_section = tags_html + cta_form
 
+    # Progress bar
+    if scan_status.get('running'):
+        prog_pct = scan_status.get('pct', 0)
+        prog_txt = scan_status.get('progress', 'Escaneando...')
+        progress_bar = f'''<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:12px 16px;margin-bottom:16px">
+            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                <span style="font-size:12px;color:#22cc55;font-weight:600">⏳ {prog_txt}</span>
+                <span style="font-size:12px;color:#22cc5588">{prog_pct}%</span>
+            </div>
+            <div style="background:#0a1a10;border-radius:6px;height:6px;overflow:hidden">
+                <div style="background:#22cc55;height:100%;width:{prog_pct}%;transition:width .3s;border-radius:6px"></div>
+            </div>
+            <div style="font-size:10px;color:#22cc5566;margin-top:6px">Atualiza automaticamente...</div>
+            <meta http-equiv="refresh" content="3">
+        </div>'''
+    elif scan_status.get('finished') and scan_status.get('progress'):
+        progress_bar = f'''<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:12px 16px;margin-bottom:16px">
+            <span style="font-size:12px;color:#22cc55">✅ {scan_status["progress"]}</span>
+        </div>'''
+    else:
+        progress_bar = ''
+
     html = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -519,9 +608,10 @@ input::placeholder{color:#2a2a2a}
 <div class="topbar">
 <a href="/admin" class="btn-sm">Atualizar pagina</a>
 <a href="/refresh" class="btn-sm">Forcar refresh dados</a>
-<a href="/scan" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">" + ('⏳ Escaneando...' if scan_status.get('running') else '🔍 Escanear CTAs agora') + "</a>
+<a href="/scan-page" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">🔍 Escanear CTAs agora</a>
 </div>
-""" + (f'<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#22cc55">⏳ {scan_status["progress"]}</div>' if scan_status.get('running') or scan_status.get('progress') else '') + """
+""" + progress_bar + """
+
 """ + alert + """
 <div class="sec">
 <div class="sec-title">Minha conta</div>
