@@ -246,7 +246,10 @@ def refresh_all():
     """Atualiza cache de todas as contas"""
     for u in ACCOUNTS:
         data = scrape_profile(u)
-        cache[u] = data
+        if data and not data.get('error'):
+            cache[u] = data
+        elif not cache.get(u):
+            cache[u] = data  # guarda mesmo com erro se nao tem cache
         # Salva histórico de views para calcular views de hoje
         if data and not data.get('error') and data.get('totalViews'):
             if u not in view_history:
@@ -278,7 +281,7 @@ def background_loop():
     last_cta  = 0
     while True:
         now = time.time()
-        if now - last_data >= 15 * 60:
+        if now - last_data >= 20 * 60:  # 20min para evitar bloqueio
             refresh_all()
             last_data = now
         if now - last_cta >= 10 * 60:
@@ -478,9 +481,13 @@ def all_data():
 def account_data(username):
     """Retorna dados de uma conta específica"""
     d = cache.get(username)
-    if not d:
-        d = scrape_profile(username)
-        cache[username] = d
+    if not d or d.get('error'):
+        fresh = scrape_profile(username)
+        if fresh and not fresh.get('error'):
+            cache[username] = fresh
+            d = fresh
+        elif not d:
+            d = fresh  # usa mesmo com erro se nao tem cache
 
     # Calcula views de hoje (diferença entre cache atual e cache de 24h atrás)
     hist = view_history.get(username, [])
