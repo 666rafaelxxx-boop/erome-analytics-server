@@ -524,7 +524,9 @@ def account_data(username):
     result['viewsToday'] = views_today
     result['ctaStatus']  = st
     result['ctas']       = cta_config.get(username, [])
-    result['ctaAlert']   = cta_alert  # 0 = ok, >0 = sumiu
+    result['ctaAlert']   = cta_alert
+    # Sempre mostra horário atual como "checkedAt" para o widget saber que está vivo
+    result['checkedAt']  = datetime.now(timezone.utc).isoformat()
     return jsonify(result)
 
 
