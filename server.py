@@ -180,7 +180,37 @@ def background_loop():
 # ── ROTAS API ────────────────────────────────────────────────────
 @app.route('/')
 def index():
-    return jsonify({'status': 'ok', 'accounts': ACCOUNTS})
+    return jsonify({'status': 'ok', 'accounts': ACCOUNTS, 'ctas': cta_config})
+
+@app.route('/setup')
+def setup():
+    """Configura contas e CTAs via GET — acesse no navegador"""
+    from flask import request
+    users = request.args.get('accounts', '').split(',')
+    users = [u.strip() for u in users if u.strip()]
+    ctas_raw = request.args.get('ctas', '')
+
+    for u in users:
+        if u not in ACCOUNTS:
+            ACCOUNTS.append(u)
+
+    # CTAs no formato: conta1:CTA1+CTA2,conta2:CTA3
+    if ctas_raw:
+        for part in ctas_raw.split(','):
+            if ':' in part:
+                u, tags = part.split(':', 1)
+                cta_config[u.strip()] = [t.strip().upper() for t in tags.split('+')]
+
+    # Força atualização
+    threading.Thread(target=refresh_all, daemon=True).start()
+    threading.Thread(target=cta_refresh_all, daemon=True).start()
+
+    return jsonify({
+        'ok': True,
+        'accounts': ACCOUNTS,
+        'ctas': cta_config,
+        'msg': 'Configurado! Aguarde 30 segundos e acesse /data/SuaConta'
+    })
 
 
 @app.route('/data')
