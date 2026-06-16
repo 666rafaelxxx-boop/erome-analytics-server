@@ -175,6 +175,9 @@ def check_ctas_for(username):
                 'foundCta':  found,
                 'checkedAt': datetime.now(timezone.utc).isoformat(),
             }
+            # Se usou scan independente, só mantém os que TEM CTA (não marca como sumiu os que nunca tiveram)
+            if not synced and not bool(found):
+                del results[aid]
             time.sleep(0.3)
         except:
             pass
@@ -227,6 +230,27 @@ def background_loop():
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'accounts': ACCOUNTS, 'ctas': cta_config})
+
+@app.route('/scan')
+def manual_scan():
+    """Força scan imediato de CTAs em todos os álbuns"""
+    from flask import redirect
+    def do_scan():
+        for u in ACCOUNTS:
+            # Força busca atualizada dos álbuns
+            data = scrape_profile(u)
+            if data and not data.get('error'):
+                cache[u] = data
+            # Roda verificação de CTAs
+            import asyncio
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(check_ctas_for(u))
+                loop.close()
+            except Exception as ex:
+                print(f'[SCAN] Erro: {ex}')
+    threading.Thread(target=do_scan, daemon=True).start()
+    return redirect('/admin')
 
 @app.route('/setup')
 def setup():
@@ -371,8 +395,11 @@ def admin():
             alb_href  = next((a.get('href','')  for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
             entry = {'user':u,'aid':aid,'title':alb_title,'href':alb_href,
                      'ok':v.get('ok'),'foundCta':v.get('foundCta','--'),'checkedAt':str(v.get('checkedAt',''))[:16]}
-            if not v.get('ok'): gone_albums.append(entry)
-            else: ok_albums.append(entry)
+            # Só mostra SUMIU se foundCta era válido antes (não None/None)
+            if not v.get('ok') and v.get('foundCta') not in (None, 'None', '--', 'null'):
+                gone_albums.append(entry)
+            elif v.get('ok'):
+                ok_albums.append(entry)
 
     def alb_row(e, gone=False):
         col  = '#ff4466' if gone else '#59E38A'
@@ -477,6 +504,7 @@ input::placeholder{color:#2a2a2a}
 <div class="topbar">
 <a href="/admin" class="btn-sm">Atualizar pagina</a>
 <a href="/refresh" class="btn-sm">Forcar refresh dados</a>
+<a href="/scan" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">Escanear CTAs agora</a>
 </div>
 """ + alert + """
 <div class="sec">
