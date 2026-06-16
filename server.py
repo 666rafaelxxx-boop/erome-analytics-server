@@ -413,15 +413,17 @@ def admin():
     if no_account:
         cta_section = '<div style="color:#444;font-size:13px">Adicione uma conta primeiro.</div>'
     else:
-        cta_section = tags_html + """
-        <form action="/admin/add-cta" method="POST" style="margin-top:12px">
-            <input type="hidden" name="account" value="""" + main_account + """">
-            <div class="row">
-                <input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required style="text-transform:uppercase">
-                <button type="submit" class="btn">+ Adicionar CTA</button>
-            </div>
-            <div class="hint">Adicione um por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>
-        </form>"""
+        cta_form = (
+            '<form action="/admin/add-cta" method="POST" style="margin-top:12px">' +
+            '<input type="hidden" name="account" value="' + main_account + '">' +
+            '<div class="row">' +
+            '<input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required style="text-transform:uppercase">' +
+            '<button type="submit" class="btn">+ Adicionar CTA</button>' +
+            '</div>' +
+            '<div class="hint">Adicione um por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>' +
+            '</form>'
+        )
+        cta_section = tags_html + cta_form
 
     html = """<!DOCTYPE html>
 <html lang="pt-BR">
