@@ -166,9 +166,24 @@ def check_ctas_for(username):
         try:
             r    = requests.get(href, headers=HEADERS, timeout=10)
             soup = BeautifulSoup(r.text, 'html.parser')
-            comm_text = ' '.join(
-                el.get_text() for el in soup.select('.comment-text, .list-comment')
-            ).lower()
+            # Múltiplos seletores — igual ao Tampermonkey
+            # Baseado no HTML do Erome: div.comment > div.comment-content > span.comment-text
+            selectors = [
+                'span.comment-text',
+                '.comment-text',
+                '.comment-content',
+                '.list-comment',
+                'div.comment',
+                '#comments',
+            ]
+            parts = []
+            for sel in selectors:
+                parts += [el.get_text() for el in soup.select(sel)]
+            # Fallback: texto completo da seção de comentários
+            comm_div = soup.select_one('.comments, #comments, [class*="comment"]')
+            if comm_div:
+                parts.append(comm_div.get_text())
+            comm_text = ' '.join(parts).lower()
             found = next((ct for ct in ctas if ct.lower() in comm_text), None)
             prev  = results.get(aid, {})
             results[aid] = {
@@ -240,7 +255,7 @@ def index():
 
 @app.route('/scan-page')
 def scan_page():
-    """Pagina de progresso do scan com auto-refresh"""
+    """Redireciona para admin - scan feito pelo Tampermonkey"""
     from flask import redirect
     if not scan_status.get('running'):
         # Inicia o scan
@@ -277,7 +292,13 @@ def scan_page():
                         try:
                             r    = requests.get(href, headers=HEADERS, timeout=10)
                             soup = BeautifulSoup(r.text, 'html.parser')
-                            txt  = ' '.join(el.get_text() for el in soup.select('.comment-text, .list-comment')).lower()
+                            parts = []
+                            for sel in ['span.comment-text','.comment-text','.comment-content','.list-comment','div.comment']:
+                                parts += [el.get_text() for el in soup.select(sel)]
+                            comm_div = soup.select_one('.comments, #comments, [class*="comment"]')
+                            if comm_div:
+                                parts.append(comm_div.get_text())
+                            txt   = ' '.join(parts).lower()
                             found = next((ct for ct in ctas if ct.lower() in txt), None)
                             prev  = results.get(aid, {})
                             if found:
@@ -333,6 +354,38 @@ def manual_scan():
 
     threading.Thread(target=do_scan, daemon=True).start()
     return redirect('/admin?scan=1')
+
+@app.route('/debug-comments')
+def debug_comments():
+    """Debug: mostra texto de comentarios de um album"""
+    from flask import request
+    url = request.args.get('url', '')
+    if not url:
+        return 'Passe ?url=https://www.erome.com/a/ALBUMID'
+    try:
+        r    = requests.get(url, headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        # Tenta varios seletores
+        results = {}
+        for sel in ['span.comment-text', '.comment-text', '.comment-content',
+                    '.list-comment', 'div.comment', '.comments', '#comments']:
+            els = soup.select(sel)
+            if els:
+                results[sel] = [e.get_text()[:100] for e in els[:3]]
+        # Verifica se tem secao de comentarios
+        has_comments = bool(soup.select_one('[class*="comment"]'))
+        # Texto completo da pagina (primeiros 500 chars das comments)
+        page_text = soup.get_text()
+        comment_idx = page_text.lower().find('comment')
+        snippet = page_text[max(0,comment_idx-50):comment_idx+200] if comment_idx > 0 else 'nao encontrado'
+        return __import__('flask').jsonify({
+            'selectors_found': results,
+            'has_comment_section': has_comments,
+            'page_snippet': snippet,
+            'status': r.status_code,
+        })
+    except Exception as e:
+        return str(e)
 
 @app.route('/setup')
 def setup():
@@ -436,6 +489,31 @@ def set_ctas():
         cta_config[u] = [c.upper() for c in ctas]
     return jsonify({'ok': True, 'ctas': cta_config})
 
+
+@app.route('/push-cta-status', methods=['POST'])
+def push_cta_status():
+    """Recebe status dos CTAs do Tampermonkey (que ja tem acesso logado)"""
+    from flask import request
+    body     = request.json or {}
+    username = body.get('username','').strip()
+    status   = body.get('status', {})  # {albumId: {ok, foundCta, title, href}}
+    if username and status:
+        if username not in cta_status:
+            cta_status[username] = {}
+        cta_status[username].update(status)
+        # Atualiza lista de comentados tambem
+        if username not in commented_albums:
+            commented_albums[username] = []
+        existing_ids = {a['id'] for a in commented_albums[username]}
+        for aid, v in status.items():
+            if aid not in existing_ids:
+                commented_albums[username].append({
+                    'id': aid,
+                    'title': v.get('title',''),
+                    'href':  v.get('href',''),
+                })
+        print(f'[PUSH] Status de {len(status)} CTAs recebido de @{username}')
+    return __import__('flask').jsonify({'ok': True})
 
 @app.route('/sync-commented', methods=['POST'])
 def sync_commented():
