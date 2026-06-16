@@ -483,6 +483,18 @@ Dados: 15min - CTAs: 10min - <a href="/" style="color:#222">API JSON</a>
     return html
 
 
+@app.route('/admin/add', methods=['POST'])
+def admin_add():
+    from flask import request, redirect
+    u    = request.form.get('account','').strip()
+    craw = request.form.get('ctas','').strip()
+    if u and u not in ACCOUNTS:
+        ACCOUNTS.append(u)
+    if craw and u:
+        cta_config[u] = [x.strip().upper() for x in craw.split(',') if x.strip()]
+    threading.Thread(target=refresh_all, daemon=True).start()
+    return redirect('/admin')
+
 @app.route('/admin/add-cta', methods=['POST'])
 def admin_add_cta():
     from flask import request, redirect
