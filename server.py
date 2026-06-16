@@ -392,6 +392,37 @@ def admin():
             + '<a href="/remove?account=' + u + '" style="color:#ff224455;text-decoration:none;font-size:12px">Remover conta</a>'
             + '</div>')
 
+    # Build admin page
+    no_account = not ACCOUNTS
+    main_account = ACCOUNTS[0] if ACCOUNTS else ''
+
+    if no_account:
+        acc_section = """
+        <div style="color:#444;font-size:13px;margin-bottom:14px">Nenhuma conta cadastrada ainda.</div>
+        <form action="/admin/add" method="POST">
+            <div class="row">
+                <input name="account" placeholder="Username (ex: ModoNoturnoBR)" required>
+                <button type="submit" class="btn">+ Adicionar conta</button>
+            </div>
+            <div class="hint">Digite apenas o username sem @</div>
+        </form>"""
+    else:
+        acc_section = accs_html + """
+        <div style="margin-top:10px;font-size:11px;color:#333">Para trocar de conta, remova a atual e adicione a nova.</div>"""
+
+    if no_account:
+        cta_section = '<div style="color:#444;font-size:13px">Adicione uma conta primeiro.</div>'
+    else:
+        cta_section = tags_html + """
+        <form action="/admin/add-cta" method="POST" style="margin-top:12px">
+            <input type="hidden" name="account" value="""" + main_account + """">
+            <div class="row">
+                <input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required style="text-transform:uppercase">
+                <button type="submit" class="btn">+ Adicionar CTA</button>
+            </div>
+            <div class="hint">Adicione um por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>
+        </form>"""
+
     html = """<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -410,8 +441,8 @@ h1 span{color:#ff2244}
 input{background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;flex:1;min-width:120px;outline:none}
 input:focus{border-color:#ff2244}
 input::placeholder{color:#2a2a2a}
-input[readonly]{color:#555}
 .btn{background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:8px;color:#fff;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap}
+.btn:hover{filter:brightness(1.1)}
 .btn-sm{background:#111;border:1px solid #ff224430;border-radius:8px;color:#ff2244;padding:6px 14px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block}
 .hint{font-size:11px;color:#333;margin-top:8px;line-height:1.5}
 .topbar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
@@ -426,30 +457,12 @@ input[readonly]{color:#555}
 """ + alert + """
 <div class="sec">
 <div class="sec-title">Minha conta</div>
-<div class="card">
-""" + (accs_html if accs_html else '<div style="color:#444;font-size:13px">Nenhuma conta ainda</div>') + """
-<form action="/admin/add" method="POST" style="margin-top:12px">
-<div class="row">
-<input name="account" placeholder="Username (ex: ModoNoturnoBR)" required>
-<button type="submit" class="btn">+ Adicionar</button>
-</div>
-</form>
-</div>
+<div class="card">""" + acc_section + """</div>
 </div>
 
 <div class="sec">
 <div class="sec-title">Meus CTAs</div>
-<div class="card">
-""" + (tags_html if tags_html else '<div style="color:#444;font-size:13px;margin-bottom:12px">Adicione uma conta primeiro</div>') + """
-<form action="/admin/add-cta" method="POST" style="margin-top:4px">
-<div class="row">
-""" + ('<input name="account" value="' + ACCOUNTS[0] + '" readonly style="max-width:180px;color:#555">' if len(ACCOUNTS)==1 else '<input name="account" placeholder="Username" required style="max-width:180px">') + """
-<input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required>
-<button type="submit" class="btn">+ Adicionar CTA</button>
-</div>
-<div class="hint">Adicione uma palavra por vez. Clique no x para remover.</div>
-</form>
-</div>
+<div class="card">""" + cta_section + """</div>
 </div>
 
 <div class="sec">
@@ -468,6 +481,7 @@ Dados: 15min - CTAs: 10min - <a href="/" style="color:#222">API JSON</a>
 </body>
 </html>"""
     return html
+
 
 @app.route('/admin/add-cta', methods=['POST'])
 def admin_add_cta():
@@ -488,3 +502,5 @@ def admin_remove_cta():
     if u in cta_config and cta in cta_config[u]:
         cta_config[u].remove(cta)
     return redirect('/admin')
+
+
