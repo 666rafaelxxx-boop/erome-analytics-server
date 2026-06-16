@@ -528,7 +528,16 @@ def push_cta_status():
     if username and status:
         if username not in cta_status:
             cta_status[username] = {}
-        cta_status[username].update(status)
+        # Mantém titulo e href no status
+        for aid, v in status.items():
+            existing = cta_status[username].get(aid, {})
+            cta_status[username][aid] = {
+                'ok':        v.get('ok', existing.get('ok', True)),
+                'foundCta':  v.get('foundCta', existing.get('foundCta')),
+                'checkedAt': v.get('checkedAt', existing.get('checkedAt', '')),
+                'title':     v.get('title') or existing.get('title',''),
+                'href':      v.get('href')  or existing.get('href',''),
+            }
         # Atualiza lista de comentados tambem
         if username not in commented_albums:
             commented_albums[username] = []
@@ -580,8 +589,15 @@ def admin():
     ok_albums   = []
     for u in ACCOUNTS:
         for aid, v in cta_status.get(u, {}).items():
-            alb_title = next((a.get('title','') for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), aid)
+            # Tenta pegar titulo do cache, depois do status, depois usa o ID
+            alb_title = next((a.get('title','') for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
             alb_href  = next((a.get('href','')  for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
+            # Fallback: usa dados que vieram do Tampermonkey
+            if not alb_title: alb_title = v.get('title','')
+            if not alb_href:  alb_href  = v.get('href','')
+            # Último fallback: monta href pelo ID
+            if not alb_href and aid: alb_href = f'https://www.erome.com/a/{aid}'
+            if not alb_title: alb_title = f'Álbum {aid}'
             entry = {'user':u,'aid':aid,'title':alb_title,'href':alb_href,
                      'ok':v.get('ok'),'foundCta':v.get('foundCta','--'),'checkedAt':str(v.get('checkedAt',''))[:16]}
             # Só mostra SUMIU se foundCta era válido antes (não None/None)
