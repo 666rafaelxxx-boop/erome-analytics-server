@@ -340,16 +340,22 @@ def sync_commented():
     albums   = body.get('albums', [])
     if username and albums:
         commented_albums[username] = albums
-        print(f'[SYNC] {len(albums)} albuns comentados recebidos de @{username}')
-        # Inicia verificacao imediata
-        import threading
-        threading.Thread(target=lambda: __import__('asyncio').run(check_ctas_for(username)), daemon=True).start()
+        # Limpa status antigo para evitar falsos positivos
+        cta_status[username] = {}
+        print(f'[SYNC] {len(albums)} albuns recebidos de @{username} — status resetado')
+        # Inicia verificacao imediata em thread separada
+        threading.Thread(target=cta_refresh_all, daemon=True).start()
     return __import__('flask').jsonify({'ok': True, 'synced': len(albums)})
 
 @app.route('/refresh')
 def manual_refresh():
     """Força atualização manual"""
+    from flask import request, redirect
     threading.Thread(target=refresh_all, daemon=True).start()
+    # Se veio do admin, volta pro admin
+    ref = request.referrer or ''
+    if 'admin' in ref:
+        return redirect('/admin')
     return jsonify({'ok': True, 'message': 'Atualização iniciada'})
 
 
@@ -532,3 +538,5 @@ def admin_remove_cta():
     if u in cta_config and cta in cta_config[u]:
         cta_config[u].remove(cta)
     return redirect('/admin')
+
+
