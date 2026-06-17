@@ -64,13 +64,15 @@ def save_data():
 app = Flask(__name__)
 
 # ── CONFIGURAÇÃO ─────────────────────────────────────────────────
-ACCOUNTS   = []   # preenchido via POST /accounts
-cache        = {}   # {username: {data, updatedAt}}
-view_history = {}   # {username: [{ts, views}, ...]} para calcular views de hoje
-cta_config = {}   # {username: [cta1, cta2, ...]}
-cta_status       = {}   # {username: {albumId: {ok, checkedAt}}}
-commented_albums = {}   # {username: [{id, title, href}]} — sincronizado pelo PC
+_saved           = load_data()
+ACCOUNTS         = _saved.get('accounts', [])
+cache            = {}
+view_history     = _saved.get('view_history', {})
+cta_config       = _saved.get('cta_config', {})
+cta_status       = _saved.get('cta_status', {})
+commented_albums = _saved.get('commented_albums', {})
 scan_status      = {'running': False, 'progress': '', 'started': '', 'finished': ''}
+print(f'[INIT] Carregado: {ACCOUNTS} | CTAs: {list(cta_config.keys())}')
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -852,3 +854,5 @@ def admin_remove_cta():
         cta_config[u].remove(cta)
     save_data()
     return redirect('/admin')
+
+
