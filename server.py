@@ -535,13 +535,13 @@ def account_data(username):
         if best and best_d < 7200:
             # Tem dados de 24h atrás — calcula normalmente
             views_today = max(0, d['totalViews'] - best['views'])
-        else:
-            # Ainda não tem 24h — usa o snapshot mais antigo disponível
-            # Calcula desde o início da sessão do servidor
+        elif len(hist) >= 2:
+            # Ainda não tem 24h — usa o snapshot mais antigo disponível (precisa ter pelo menos 2 pontos)
             oldest = min(hist, key=lambda x: x['ts'])
             age_h  = (now_ts - oldest['ts']) / 3600
-            if age_h >= 0.25:  # pelo menos 15 min de histórico
+            if age_h >= 0.25 and oldest['views'] != d['totalViews']:
                 views_today = max(0, d['totalViews'] - oldest['views'])
+        # Se só tem 1 ponto de histórico (acabou de reiniciar), deixa None pra mostrar "coletando dados"
 
     # Calcula alerta de CTA
     st         = cta_status.get(username, {})
