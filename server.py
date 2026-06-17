@@ -100,6 +100,17 @@ def scrape_profile(username):
     try:
         url = f'https://www.erome.com/{username}?t=posts'
         r   = requests.get(url, headers=HEADERS, timeout=15)
+        # Se 429, backoff exponencial: 1min, 2min, 4min (max 3 tentativas)
+        retries = 0
+        while r.status_code == 429 and retries < 3:
+            wait = 60 * (2 ** retries)
+            print(f'[429] Tentativa {retries+1}/3 — aguardando {wait}s...')
+            time.sleep(wait)
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            retries += 1
+        if r.status_code == 429:
+            print(f'[429] Erome bloqueando — usando cache existente')
+            return cache.get(username) or {'error': '429', 'username': username, 'fetchedAt': datetime.now(timezone.utc).isoformat()}
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'html.parser')
 
@@ -854,5 +865,3 @@ def admin_remove_cta():
         cta_config[u].remove(cta)
     save_data()
     return redirect('/admin')
-
-
