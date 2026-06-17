@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import threading
-import re 
+import re
 import json
 import os
 from datetime import datetime, timezone
@@ -14,19 +14,35 @@ from datetime import datetime, timezone
 DATA_FILE = '/tmp/erome_data.json'
 
 def load_data():
-    # Tenta arquivo primeiro
+    # 1. Tenta arquivo /tmp
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r') as f:
                 data = json.load(f)
-                if data: return data
+                if data and data.get('accounts'):
+                    return data
     except: pass
-    # Fallback: variavel de ambiente
+    # 2. Tenta variavel de ambiente EROME_DATA (configurada no Railway)
     try:
         env_data = os.environ.get('EROME_DATA', '')
         if env_data:
             return json.loads(env_data)
     except: pass
+    # 3. Tenta variaveis individuais (mais simples de manter no Railway)
+    accounts = []
+    cta_cfg  = {}
+    try:
+        acc_env = os.environ.get('EROME_ACCOUNTS', '')
+        if acc_env:
+            accounts = [a.strip() for a in acc_env.split(',') if a.strip()]
+    except: pass
+    try:
+        cta_env = os.environ.get('EROME_CTAS', '')
+        if cta_env:
+            cta_cfg = json.loads(cta_env)
+    except: pass
+    if accounts:
+        return {'accounts': accounts, 'cta_config': cta_cfg}
     return {}
 
 def save_data():
@@ -37,14 +53,13 @@ def save_data():
         'commented_albums': commented_albums,
         'view_history':     view_history,
     }
-    # Salva em arquivo
+    # Salva em /tmp
     try:
         with open(DATA_FILE, 'w') as f:
             json.dump(data, f)
     except Exception as e:
         print(f'[SAVE] Erro arquivo: {e}')
-    # Também imprime para log (Railway persiste logs)
-    print(f'[SAVE] Dados salvos: {len(ACCOUNTS)} contas, CTAs: {list(cta_config.keys())}')
+    print(f'[SAVE] {len(ACCOUNTS)} contas | CTAs: {list(cta_config.keys())}')
 
 app = Flask(__name__)
 
@@ -837,5 +852,3 @@ def admin_remove_cta():
         cta_config[u].remove(cta)
     save_data()
     return redirect('/admin')
-
-
