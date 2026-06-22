@@ -865,3 +865,12 @@ def admin_remove_cta():
         cta_config[u].remove(cta)
     save_data()
     return redirect('/admin')
+
+
+# ── INICIA O LOOP DE FUNDO ───────────────────────────────────────
+# Precisa estar aqui fora (e não dentro de um "if __name__ == '__main__'"),
+# porque no Railway é o gunicorn que importa este módulo — ele nunca
+# executa "python app.py" diretamente, então esse bloco nunca rodaria.
+# É só essa thread que faltava: sem ela, o cache só era preenchido uma
+# vez (no primeiro request via scrape on-demand) e nunca mais atualizado.
+threading.Thread(target=background_loop, daemon=True).start()
