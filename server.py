@@ -718,9 +718,9 @@ def admin():
     no_account = not ACCOUNTS
     main_account = ACCOUNTS[0] if ACCOUNTS else ''
 
-    if no_account:
-        acc_section = """
-        <div style="color:#444;font-size:13px;margin-bottom:14px">Nenhuma conta cadastrada ainda.</div>
+    # Formulário de adicionar conta — sempre visível, mesmo com contas existentes,
+    # pra dar pra cadastrar várias contas sem precisar remover a atual primeiro.
+    acc_form = """
         <form action="/admin/add" method="POST">
             <div class="row">
                 <input name="account" placeholder="Username (ex: ModoNoturnoBR)" required>
@@ -728,21 +728,26 @@ def admin():
             </div>
             <div class="hint">Digite apenas o username sem @</div>
         </form>"""
+
+    if no_account:
+        acc_section = '<div style="color:#444;font-size:13px;margin-bottom:14px">Nenhuma conta cadastrada ainda.</div>' + acc_form
     else:
-        acc_section = accs_html + """
-        <div style="margin-top:10px;font-size:11px;color:#333">Para trocar de conta, remova a atual e adicione a nova.</div>"""
+        acc_section = accs_html + '<div style="margin-top:14px">' + acc_form + '</div>'
 
     if no_account:
         cta_section = '<div style="color:#444;font-size:13px">Adicione uma conta primeiro.</div>'
     else:
+        # Seletor de conta no formulário de CTA — antes ficava fixo na primeira
+        # conta da lista, então contas adicionadas depois nunca conseguiam CTA.
+        acc_options = ''.join('<option value="' + u + '">@' + u + '</option>' for u in ACCOUNTS)
         cta_form = (
             '<form action="/admin/add-cta" method="POST" style="margin-top:12px">' +
-            '<input type="hidden" name="account" value="' + main_account + '">' +
             '<div class="row">' +
+            '<select name="account" style="background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;outline:none">' + acc_options + '</select>' +
             '<input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required style="text-transform:uppercase">' +
             '<button type="submit" class="btn">+ Adicionar CTA</button>' +
             '</div>' +
-            '<div class="hint">Adicione um por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>' +
+            '<div class="hint">Escolha a conta no menu, adicione um CTA por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>' +
             '</form>'
         )
         cta_section = tags_html + cta_form
