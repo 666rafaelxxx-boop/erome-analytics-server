@@ -259,10 +259,7 @@ def check_ctas_for(username):
             # Só registra "sumiu" se antes estava OK
             if prev.get('ok') and not bool(found):
                 print(f'[CTA] SUMIU em {aid} (@{username})')
-            # Se nunca teve CTA e scan geral, remove pra nao poluir
-            if not synced and not bool(found) and not prev.get('ok'):
-                if aid in results: del results[aid]
-            time.sleep(0.3)
+            time.sleep(0.6)
         except Exception as ex:
             print(f'[CTA] Erro album {aid}: {ex}')
 
@@ -381,7 +378,7 @@ def scan_page():
                                 results[aid] = {'ok': False, 'foundCta': None, 'checkedAt': datetime.now(timezone.utc).isoformat()}
                                 print(f'[SCAN] CTA SUMIU: {album.get("title",aid)}')
                             # Nao registra albuns sem historico e sem CTA
-                            time.sleep(0.3)
+                            time.sleep(0.6)
                         except Exception as ex:
                             print(f'[SCAN] Erro {aid}: {ex}')
 
