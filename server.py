@@ -292,9 +292,9 @@ def scrape_profile(username, progress_cb=None, status_cb=None):
             raw   = nodes[0].strip() if nodes else (txt.split()[0] if txt.split() else '')
             num   = parse_num(raw)
             up    = txt.upper()
-            if 'ALBUM'  in up: album_count = num
-            if 'VIEW'   in up: total_views = num
-            if 'FOLLOW' in up: followers   = num
+            if 'ALBUM'     in up: album_count = num
+            if 'VIEW'      in up: total_views = num
+            if 'FOLLOWERS' in up: followers   = num  # "FOLLOW" sozinho também batia em "FOLLOWING" e sobrescrevia com o valor errado
 
         av_el  = soup.select_one('img.avatar, .avatar img')
         avatar = av_el.get('src') if av_el else None
