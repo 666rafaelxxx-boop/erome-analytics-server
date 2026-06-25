@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Erome Analytics</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes fadein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+html,body{background:#0a0a0a;color:#f0f0f0;font-family:Inter,-apple-system,sans-serif;min-height:100vh}
+#app{max-width:1080px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
+
+/* ---------- HEADER ---------- */
+#hd{display:flex;align-items:center;gap:10px;padding:14px 20px;background:#080808;
+  border-bottom:1px solid #ff224420;flex-wrap:wrap;position:sticky;top:0;z-index:50;backdrop-filter:blur(6px)}
+.logo-mark{width:18px;height:18px;flex-shrink:0}
+.logo-mark svg{width:100%;height:100%}
+#hd-title{font-size:16px;font-weight:700;color:#fff;letter-spacing:.01em;flex:1;white-space:nowrap}
+#hd-title span{color:#ff2244}
+.hbtn{background:transparent;border:1px solid #ff224440;border-radius:7px;color:#ff2244;font-size:12px;
+  font-weight:600;padding:7px 13px;cursor:pointer;font-family:Inter,sans-serif;transition:all .15s;white-space:nowrap}
+.hbtn:hover{background:#ff224415;border-color:#ff2244}
+.hbtn:disabled{opacity:.4;cursor:default}
+.live-dot{width:7px;height:7px;border-radius:50%;background:#22cc55;flex-shrink:0;
+  animation:pulse 2s ease-in-out infinite;box-shadow:0 0 6px #22cc55;margin-right:2px;display:inline-block}
+
+/* ---------- ACCOUNT TABS (scroll horizontal) ---------- */
+#accs{display:flex;align-items:center;gap:2px;overflow-x:auto;padding:0 14px;background:#060606;
+  border-bottom:1px solid #ff224418;flex-shrink:0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+#accs::-webkit-scrollbar{display:none}
+.acc{display:flex;align-items:center;gap:7px;padding:11px 13px;border-bottom:2px solid transparent;
+  cursor:pointer;white-space:nowrap;font-size:13px;color:#555;transition:all .15s;flex-shrink:0}
+.acc.on{color:#ff2244;border-bottom-color:#ff2244}
+.ini{width:19px;height:19px;border-radius:50%;flex-shrink:0;background:linear-gradient(135deg,#ff2244,#880020);
+  display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff}
+.dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.dot.ok{background:#22cc55}.dot.loading{background:#ff8800;animation:pulse 1s infinite}
+.dot.error{background:#ff2244}.dot.none{background:#2a2a2a}
+#add-acc-btn{display:flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:7px;
+  margin:6px;border:1px dashed #ff224440;color:#ff224488;cursor:pointer;font-size:18px;transition:all .15s;flex-shrink:0}
+#add-acc-btn:hover{border-color:#ff2244;color:#ff2244;background:#ff224412}
+
+/* ---------- SECTION TABS ---------- */
+#tabs{display:flex;gap:0;overflow-x:auto;padding:0 16px;background:#0a0a0a;
+  border-bottom:1px solid #ff224415;flex-shrink:0;scrollbar-width:none;align-items:center;-webkit-overflow-scrolling:touch}
+#tabs::-webkit-scrollbar{display:none}
+.tab{padding:11px 14px;font-size:11px;font-weight:600;color:#333;cursor:pointer;border:none;
+  border-bottom:2px solid transparent;background:none;font-family:Inter,sans-serif;letter-spacing:.05em;
+  text-transform:uppercase;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.tab.on{color:#ff2244;border-bottom-color:#ff2244}
+.badge{display:inline-flex;align-items:center;justify-content:center;background:#ff224430;color:#ff2244;
+  border-radius:10px;font-size:9px;padding:1px 5px;margin-left:4px;font-weight:700}
+.badge.gold{background:#ff880030;color:#ff8800}.badge.blue{background:#0088ff30;color:#0088ff}
+.tab-spacer{flex:1;min-width:8px}
+.tab-action{background:transparent;border:1px solid #ff224430;border-radius:6px;color:#ff224477;
+  font-size:11px;padding:5px 11px;cursor:pointer;font-family:Inter,sans-serif;margin:6px 0 6px 6px;
+  transition:all .15s;flex-shrink:0;white-space:nowrap}
+.tab-action:hover{border-color:#ff2244;color:#ff2244}
+.tab-danger{background:transparent;border:1px solid #ff224420;border-radius:6px;color:#ff224455;
+  font-size:11px;padding:5px 11px;cursor:pointer;font-family:Inter,sans-serif;margin:6px 6px 6px 0;
+  transition:all .15s;flex-shrink:0;white-space:nowrap}
+.tab-danger:hover{border-color:#ff224480;color:#ff2244}
+
+/* ---------- BODY / CARDS ---------- */
+#body{flex:1;padding:20px;animation:fadein .2s ease}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px}
+.card{background:linear-gradient(155deg,#131313,#0d0d0d);border:1px solid #ff224418;border-radius:11px;
+  padding:14px;position:relative;overflow:hidden;box-shadow:0 1px 0 0 #ffffff08 inset,0 2px 8px rgba(0,0,0,.35)}
+.card-lbl{font-size:10px;font-weight:600;color:#ff224488;text-transform:uppercase;letter-spacing:.1em;margin-bottom:7px}
+.card-val{font-size:24px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace}
+.card-sub{font-size:11px;margin-top:4px;font-family:'JetBrains Mono',monospace}
+.up{color:#33e668}.dn{color:#ff3355}.fl{color:#777}
+
+.timeline{display:flex;align-items:flex-end;gap:2px;height:72px;margin-bottom:6px;
+  background:#080808;border:1px solid #ff224412;border-radius:10px;padding:10px 12px;overflow:hidden}
+.tbar{flex:1;min-width:3px;background:linear-gradient(180deg,#ff2244cc,#ff224430);border-radius:2px 2px 0 0;min-height:3px}
+.timeline-cta{border-color:#22cc5520}
+.tbar-cta{flex:1;min-width:3px;background:linear-gradient(180deg,#22cc55cc,#22cc5530);border-radius:2px 2px 0 0;min-height:3px}
+
+.alerts{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.alert{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.5}
+.alert.warn{background:#1a0800;border:1px solid #ff6600;color:#ffaa44}
+.alert.fire{background:#1a0008;border:1px solid #ff2244;color:#ff6688}
+.alert.ok{background:#001a08;border:1px solid #22cc55;color:#44ee88}
+.alert.gold{background:#1a1000;border:1px solid #ff8800;color:#ffaa44}
+
+.sh{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;flex-wrap:wrap}
+.st{font-size:11px;font-weight:600;color:#ff224488;text-transform:uppercase;letter-spacing:.1em}
+
+.list{display:flex;flex-direction:column;gap:6px}
+.row{background:#111;border:1px solid #ff224415;border-radius:9px;padding:10px 14px;
+  display:flex;align-items:center;gap:10px;transition:border-color .15s}
+.row.confirmed{border-color:#ff880050;background:#110e00}
+.row.standout{border-color:#ff880030;background:#0d0900}
+.row.done{border-color:#22cc5530;background:#001a08}
+.row.gone{border-color:#ff224450;background:#1a0005;animation:pulse 2s ease-in-out infinite}
+.row.del{border-color:#444;background:#0c0c0c;opacity:.75}
+.row-n{font-size:11px;color:#ff224444;font-family:'JetBrains Mono',monospace;min-width:24px;text-align:right;flex-shrink:0}
+.row-main{flex:1;min-width:0;display:flex;align-items:center;gap:8px;overflow:hidden}
+.row-t{flex:1;font-size:13px;color:#ccc;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.row-t a{color:inherit;text-decoration:none}
+.row-t a:hover{color:#ff2244}
+.row-t.del{color:#444;text-decoration:line-through}
+.row-meta{display:flex;align-items:center;gap:8px;flex-shrink:0;flex-wrap:nowrap}
+.stat{font-size:13px;color:#aab5b0;font-weight:600;font-family:'JetBrains Mono',monospace;white-space:nowrap}
+.stat .i{color:#ff2244a0}
+.vtag{font-size:10px;font-weight:700;color:#ff8800;font-family:'JetBrains Mono',monospace;flex-shrink:0}
+.cta-tag{background:#8855ff1f;color:#b399ff;border:1px solid #8855ff45;border-radius:6px;padding:2px 8px;
+  font-size:10px;font-weight:700;letter-spacing:.03em;white-space:nowrap;flex-shrink:0;
+  font-family:'JetBrains Mono',monospace;text-transform:uppercase}
+.cta-tag.unknown{background:#33333350;color:#666;border-color:#444}
+
+.check-btn{background:transparent;border:1px solid #ff880050;border-radius:6px;color:#ff880088;font-size:11px;
+  padding:4px 10px;cursor:pointer;font-family:Inter,sans-serif;transition:all .15s;white-space:nowrap;flex-shrink:0}
+.check-btn:hover{background:#ff880015;border-color:#ff8800;color:#ff8800}
+.uncheck-btn{background:transparent;border:1px solid #22cc5530;border-radius:6px;color:#22cc5566;font-size:13px;
+  padding:3px 8px;cursor:pointer;font-family:Inter,sans-serif;transition:all .15s;flex-shrink:0;line-height:1}
+.uncheck-btn:hover{background:#22cc5515;border-color:#22cc55;color:#22cc55}
+
+.daily-chip{background:#111;border:1px solid #ff224418;border-radius:9px;padding:10px 14px;
+  display:flex;flex-direction:column;gap:4px;min-width:90px}
+.daily-chip .d{font-size:10px;color:#ff224466;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
+.daily-chip .v{font-size:18px;font-weight:700;color:#22cc55;font-family:'JetBrains Mono',monospace}
+.daily-chip .l{font-size:10px;color:#333}
+
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:12px;text-align:center}
+.empty-ic{font-size:42px}
+.empty p{margin:0;font-size:13px;color:#555;line-height:1.6}
+.loading-box{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px;gap:14px}
+.spin{width:32px;height:32px;border-radius:50%;border:3px solid #1a1a1a;border-top-color:#ff2244;animation:spin .7s linear infinite}
+
+#onboard{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:18px}
+#onboard h2{margin:0;font-size:18px;font-weight:700;color:#fff}
+#onboard p{margin:0;font-size:13px;color:#555;text-align:center;line-height:1.6;max-width:340px}
+.form-card{display:flex;flex-direction:column;gap:10px;width:100%;max-width:340px;background:#111;
+  border:1px solid #ff224430;border-radius:12px;padding:20px}
+.input{background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#f0f0f0;font-size:14px;
+  padding:11px 12px;width:100%;box-sizing:border-box;font-family:Inter,sans-serif;outline:none;transition:border-color .15s}
+.input:focus{border-color:#ff2244;box-shadow:0 0 0 3px #ff224418}
+.btn{background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:8px;color:#fff;
+  font-size:13px;font-weight:700;padding:12px;cursor:pointer;font-family:Inter,sans-serif;transition:filter .15s}
+.btn:hover{filter:brightness(1.15)}
+.btn-ghost{background:transparent;border:1px solid #2a2a2a;border-radius:8px;color:#555;font-size:13px;
+  padding:11px;cursor:pointer;font-family:Inter,sans-serif;transition:all .15s}
+.btn-ghost:hover{border-color:#666;color:#ccc}
+
+#modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(4px);z-index:100;
+  display:flex;align-items:center;justify-content:center;animation:fadein .15s ease}
+.modal-box{background:#111;border:1px solid #ff224440;border-radius:12px;padding:24px;width:min(320px,90vw);
+  box-shadow:0 0 40px #ff224425}
+.modal-box h3{margin:0 0 14px;font-size:15px;font-weight:700;color:#fff}
+.modal-box h3 span{color:#ff2244}
+.modal-box label{font-size:11px;color:#ff224488;text-transform:uppercase;letter-spacing:.06em;font-weight:600;
+  display:block;margin-bottom:6px}
+.modal-actions{display:flex;gap:8px;margin-top:14px}
+.modal-actions .btn{flex:2}.modal-actions .btn-ghost{flex:1}
+
+.toast{position:fixed;bottom:20px;right:20px;left:auto;z-index:200;background:#0d0d0d;color:#f0f0f0;
+  font:13px/1.6 Inter,sans-serif;border:1px solid #ff2244;border-radius:10px;padding:14px 16px;max-width:320px;
+  box-shadow:0 0 20px #ff224455;white-space:pre-line;animation:fadein .2s ease}
+.toast.ok{border-color:#22cc55;box-shadow:0 0 20px #22cc5555}
+
+.ts{font-size:11px;color:#1e1e1e;margin-top:16px;text-align:right;font-family:'JetBrains Mono',monospace}
+.hint{font-size:11px;color:#333;line-height:1.6}
+
+/* =========================================================
+   MOBILE — abaixo de 680px o layout se reorganiza de verdade:
+   cards em 2 colunas, linhas (.row) quebram em 2 "andares"
+   (título numa linha, stats/botão na linha de baixo) em vez
+   de tentar espremer tudo numa única linha horizontal.
+   ========================================================= */
+@media (max-width: 680px){
+  #hd{padding:12px 14px;gap:8px}
+  #hd-title{font-size:14px}
+  .hbtn{font-size:11px;padding:6px 10px}
+  #body{padding:14px}
+  .grid{grid-template-columns:repeat(2,1fr);gap:8px}
+  .card{padding:11px}
+  .card-val{font-size:19px}
+  .card-lbl{font-size:9px}
+
+  .row{flex-direction:column;align-items:stretch;gap:6px;padding:11px 12px}
+  .row-n{display:none}
+  .row-main{width:100%}
+  .row-t{white-space:normal;font-size:13px;line-height:1.4}
+  .row-meta{width:100%;flex-wrap:wrap;justify-content:flex-start;gap:6px;padding-top:2px;border-top:1px solid #ffffff08}
+  .stat{font-size:12px}
+
+  .timeline{height:56px;padding:8px 8px}
+  .daily-chip{min-width:78px;padding:8px 10px}
+  .daily-chip .v{font-size:15px}
+
+  #accs, #tabs{padding:0 10px}
+  .acc{padding:10px 10px;font-size:12px}
+  .tab{padding:10px 11px;font-size:10px}
+  .tab-action,.tab-danger{font-size:10px;padding:5px 9px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="hd"></div>
+  <div id="accs" style="display:none"></div>
+  <div id="tabs" style="display:none"></div>
+  <div id="body"></div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+<script>
+// ====================== HELPERS (mesma lógica do userscript) ======================
+function fmt(n){
+  if(n==null) return '—';
+  if(n>=1e6) return (n/1e6).toFixed(1).replace('.',',')+'M';
+  if(n>=1e3) return (n/1e3).toFixed(1).replace('.',',')+'K';
+  return n.toLocaleString('pt-BR');
+}
+function e(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function diffBadge(v){
+  if(v==null) return {c:'fl',t:''};
+  if(v>0) return {c:'up',t:'▲ +'+fmt(v)};
+  if(v<0) return {c:'dn',t:'▼ '+fmt(v)};
+  return {c:'fl',t:'— igual'};
+}
+const $ = sel => document.querySelector(sel);
+async function api(path, opts){ const r = await fetch(path, opts); return r.json(); }
+function toast(msg, ok, duration){
+  duration = duration || 6000;
+  const t = document.createElement('div');
+  t.className = 'toast' + (ok ? ' ok' : '');
+  t.textContent = msg;
+  document.getElementById('toast-root').appendChild(t);
+  setTimeout(() => t.remove(), duration);
+}
+
+// ====================== ESTADO ======================
+let accounts = [];
+let activeAcc = null;
+let activeTab = 'overview';
+let dashboards = {};
+let addOpen = false;
+let scanPollTimer = null;
+let loadingPollTimer = null;
+
+// ====================== CARREGAMENTO ======================
+async function loadAccounts(){
+  accounts = await api('/admin/api/accounts');
+  if(!activeAcc && accounts.length) activeAcc = accounts[0].username;
+  if(activeAcc && !accounts.find(a=>a.username===activeAcc)) activeAcc = accounts[0]?.username || null;
+  render();
+}
+async function loadDashboard(u){
+  if(!u) return;
+  const d = await api('/admin/api/dashboard/' + encodeURIComponent(u));
+  dashboards[u] = d;
+  render();
+}
+
+// ====================== AÇÕES ======================
+async function doAddAccount(username){
+  const res = await api('/admin/api/add-account', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username})});
+  if(!res.ok){ toast(res.msg || 'Erro ao adicionar conta'); return false; }
+  activeAcc = res.username; activeTab = 'overview'; addOpen = false;
+  await loadAccounts();
+  toast('@' + res.username + ' adicionada! Carregando dados (a 1ª leitura pode levar 1-2 min)...', true, 8000);
+  pollAccountLoading(res.username);
+  return true;
+}
+async function doRemoveAccount(u){
+  if(!confirm('Remover @' + u + '? Todo o histórico dessa conta será perdido.')) return;
+  await api('/admin/api/remove-account', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u})});
+  delete dashboards[u];
+  activeAcc = null; activeTab = 'overview';
+  await loadAccounts();
+}
+async function doRefresh(u){
+  await api('/admin/api/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(u ? {username:u} : {})});
+  toast(u ? ('Atualizando @' + u + '...') : 'Atualizando todas as contas...', true, 4000);
+  pollAccountLoading(u);
+}
+function pollAccountLoading(u){
+  if(loadingPollTimer) clearInterval(loadingPollTimer);
+  let tries = 0;
+  loadingPollTimer = setInterval(async () => {
+    tries++;
+    await loadAccounts();
+    const acc = u ? accounts.find(a => a.username === u) : null;
+    const stillLoading = u ? (acc && acc.state === 'loading') : accounts.some(a => a.state === 'loading');
+    if(!stillLoading || tries > 60){
+      clearInterval(loadingPollTimer);
+      if(activeAcc) await loadDashboard(activeAcc);
+    }
+  }, 3000);
+}
+async function doMarkCommented(u, a){
+  await api('/admin/api/mark-commented', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({username:u, id:a.id, title:a.title, href:a.href, views:a.views})});
+  await loadDashboard(u);
+}
+async function doUnmarkCommented(u, id){
+  await api('/admin/api/unmark-commented', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u, id})});
+  await loadDashboard(u);
+}
+async function doAddCta(u, cta){
+  if(!cta) return;
+  await api('/admin/api/add-cta', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u, cta})});
+  await loadDashboard(u);
+}
+async function doRemoveCta(u, cta){
+  await api('/admin/api/remove-cta', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u, cta})});
+  await loadDashboard(u);
+}
+async function doClearDeleted(u){
+  if(!confirm('Limpar histórico de deletados?')) return;
+  await api('/admin/api/clear-deleted', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u})});
+  await loadDashboard(u);
+}
+async function doScan(u){
+  await api('/admin/api/scan', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({username:u})});
+  pollScan();
+}
+function pollScan(){
+  if(scanPollTimer) clearInterval(scanPollTimer);
+  scanPollTimer = setInterval(async () => {
+    const st = await api('/admin/api/scan-status');
+    const el = document.getElementById('scan-prog');
+    if(el) el.textContent = st.progress || '';
+    if(!st.running){
+      clearInterval(scanPollTimer);
+      if(activeAcc) await loadDashboard(activeAcc);
+    }
+  }, 2000);
+}
+
+// ====================== RENDER — SHELL ======================
+function render(){
+  renderHeader();
+  renderAccTabs();
+  const d = activeAcc ? dashboards[activeAcc] : null;
+  renderSectionTabs(d);
+  renderBody(d);
+  if(addOpen) renderModal();
+  else { const m = document.getElementById('modal-root'); if(m) m.innerHTML = ''; }
+}
+
+function renderHeader(){
+  $('#hd').innerHTML = `
+    <span class="logo-mark"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="9" width="3" height="6" rx="1" fill="#ff2244"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#ff2244"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#ff2244"/></svg></span>
+    <div id="hd-title"><span class="live-dot"></span>Erome <span>Analytics</span></div>
+    ${accounts.length ? '<button class="hbtn" id="btn-ref-all">↻ Atualizar tudo</button>' : ''}
+    <button class="hbtn" id="btn-add">+ Conta</button>
+  `;
+  $('#btn-add')?.addEventListener('click', () => { addOpen = true; render(); });
+  $('#btn-ref-all')?.addEventListener('click', () => doRefresh(null));
+}
+
+function renderAccTabs(){
+  const wrap = $('#accs');
+  if(!accounts.length){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  wrap.innerHTML = accounts.map(a => `
+    <div class="acc ${a.username === activeAcc ? 'on' : ''}" data-u="${e(a.username)}">
+      <span class="ini">${e(a.username[0].toUpperCase())}</span>
+      <span>@${e(a.username)}</span>
+      <span class="dot ${a.state}"></span>
+    </div>`).join('') + `<div id="add-acc-btn">+</div>`;
+  wrap.querySelectorAll('.acc[data-u]').forEach(el => el.addEventListener('click', async () => {
+    activeAcc = el.dataset.u; activeTab = 'overview'; render();
+    await loadDashboard(activeAcc);
+  }));
+  document.getElementById('add-acc-btn')?.addEventListener('click', () => { addOpen = true; render(); });
+}
+
+function renderSectionTabs(d){
+  const wrap = $('#tabs');
+  if(!d || !d.hasData){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  const commN  = d.commented.rows.length;
+  const viralN = d.viral.rows.filter(r => r.standout && !r.confirmed).length;
+  const confN  = d.viral.toCommentCount;
+  const delN   = d.deleted.log.length;
+  const ctaN   = d.ctaList.length;
+  wrap.innerHTML = `
+    <button class="tab ${activeTab==='overview'?'on':''}" data-t="overview">Visão Geral</button>
+    <button class="tab ${activeTab==='ranking'?'on':''}" data-t="ranking">Ranking</button>
+    <button class="tab ${activeTab==='viral'?'on':''}" data-t="viral">🔥 Viral${viralN?`<span class="badge">${viralN}</span>`:''}${confN?`<span class="badge gold">🎯${confN}</span>`:''}</button>
+    <button class="tab ${activeTab==='commented'?'on':''}" data-t="commented">✅ Comentados${commN?`<span class="badge blue">${commN}</span>`:''}</button>
+    <button class="tab ${activeTab==='deleted'?'on':''}" data-t="deleted">Deletados${delN?`<span class="badge">${delN}</span>`:''}</button>
+    <button class="tab ${activeTab==='ctas'?'on':''}" data-t="ctas">🎯 CTAs${ctaN?`<span class="badge">${ctaN}</span>`:''}</button>
+    <div class="tab-spacer"></div>
+    <button class="tab-action" id="btn-ref-one">↻ Atualizar</button>
+    <button class="tab-danger" id="btn-remove">✕ Remover conta</button>
+  `;
+  wrap.querySelectorAll('.tab[data-t]').forEach(el => el.addEventListener('click', () => { activeTab = el.dataset.t; render(); }));
+  document.getElementById('btn-ref-one')?.addEventListener('click', () => doRefresh(activeAcc));
+  document.getElementById('btn-remove')?.addEventListener('click', () => doRemoveAccount(activeAcc));
+}
+
+function emptyBox(msg){ return `<div class="empty"><div class="empty-ic">📭</div><p>${e(msg)}</p></div>`; }
+
+function renderBody(d){
+  const body = $('#body');
+  if(!accounts.length){ body.innerHTML = renderOnboard(); bindOnboard(); return; }
+  if(!activeAcc){ body.innerHTML = emptyBox('Selecione uma conta acima.'); return; }
+  if(!d){ body.innerHTML = `<div class="loading-box"><div class="spin"></div><p>Carregando @${e(activeAcc)}…</p></div>`; return; }
+  if(!d.hasData){
+    if(d.state === 'loading'){
+      body.innerHTML = `<div class="loading-box"><div class="spin"></div><p>Lendo álbuns de @${e(activeAcc)}… (1ª leitura pode levar 1-2 min)</p></div>`;
+      return;
+    }
+    if(d.state === 'error'){
+      body.innerHTML = `<div class="empty"><div class="empty-ic">❌</div><p>Erro ao carregar @${e(activeAcc)}: ${e(d.message||'')}</p>
+        <button class="btn" id="btn-retry" style="width:180px;margin-top:10px">Tentar novamente</button></div>`;
+      document.getElementById('btn-retry')?.addEventListener('click', () => doRefresh(activeAcc));
+      return;
+    }
+    body.innerHTML = `<div class="empty"><div class="empty-ic">⏳</div><p>Ainda sem dados.</p>
+      <button class="btn" id="btn-load-now" style="width:180px;margin-top:10px">Carregar agora</button></div>`;
+    document.getElementById('btn-load-now')?.addEventListener('click', () => doRefresh(activeAcc));
+    return;
+  }
+  let html = '';
+  if(activeTab === 'overview') html = renderOverview(d);
+  else if(activeTab === 'ranking') html = renderRanking(d);
+  else if(activeTab === 'viral') html = renderViral(d);
+  else if(activeTab === 'commented') html = renderCommented(d);
+  else if(activeTab === 'deleted') html = renderDeleted(d);
+  else if(activeTab === 'ctas') html = renderCTAs(d);
+  body.innerHTML = html;
+  bindBodyEvents(d);
+}
+
+// ====================== RENDER — ABAS ======================
+function renderOverview(o_d){
+  const o = o_d.overview;
+  const fv = o.gain1h == null ? {c:'fl',t:'aguardando dados'}
+    : o.gain1h > 0 ? {c:'up',t:'▲ +' + fmt(o.gain1h) + ' na última hora'}
+    : {c:'fl',t:'— sem ganho na última hora'};
+  const fa = diffBadge(o.albumCountDiff);
+  const ff = diffBadge(o.followersDiff);
+  const maxTL = Math.max(...o.timeline.map(t => t.views), 1);
+  const alertsHtml = o.alerts.map(a => `<div class="alert ${a.type}">${a.icon} <span>${e(a.text)}</span></div>`).join('');
+  const top8Html = o.top8.map((a, i) => `
+    <div class="row">
+      <span class="row-n">#${i+1}</span>
+      <div class="row-main"><div class="row-t">${a.href ? `<a href="${e(a.href)}" target="_blank">${e(a.title)}</a>` : e(a.title)}</div></div>
+      <div class="row-meta"><span class="stat"><span class="i">👁</span>${fmt(a.views)}</span></div>
+    </div>`).join('');
+  const dailyHtml = o.dailyHistory.length ? `
+    <div class="sh" style="margin-top:4px"><div class="st">📅 Histórico diário</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+      ${o.dailyHistory.map(dd => `<div class="daily-chip"><span class="d">${e(dd.date)}</span><span class="v">+${fmt(dd.views)}</span><span class="l">views ganhas</span></div>`).join('')}
+    </div>` : '';
+  const tcColor = o.toCommentLabel === 'confirmados' ? '#ff8800' : (o.toCommentLabel === 'em destaque' ? '#ff8800aa' : '#fff');
+
+  return `
+    ${alertsHtml ? `<div class="alerts">${alertsHtml}</div>` : ''}
+    <div class="grid">
+      <div class="card"><div class="card-lbl">👁 Views totais</div><div class="card-val">${fmt(o.totalViews)}</div><div class="card-sub ${fv.c}">${fv.t}</div></div>
+      <div class="card" style="border-color:${o.viewsToday?'#ff224440':'#ff224418'}">
+        <div class="card-lbl">📈 Views hoje</div>
+        <div class="card-val" style="color:${o.viewsToday?'#22cc55':'#fff'}">${o.viewsToday!=null?fmt(o.viewsToday):'—'}</div>
+        <div class="card-sub fl">${o.viewsToday!=null?'últimas 24h':'aguardando dados'}</div>
+      </div>
+      <div class="card"><div class="card-lbl">📁 Posts seus</div><div class="card-val">${fmt(o.albumCount)}</div><div class="card-sub ${fa.c}">${fa.t}</div></div>
+      <div class="card"><div class="card-lbl">👥 Seguidores</div><div class="card-val">${o.followers>0?fmt(o.followers):'—'}</div><div class="card-sub ${ff.c}">${ff.t}</div></div>
+      <div class="card">
+        <div class="card-lbl">📅 Sem postar</div>
+        <div class="card-val">${o.daysSem==null?'—':o.daysSem===0?'hoje':o.daysSem+'d'}</div>
+        <div class="card-sub ${o.newPosts>0?'up':(o.daysSem>=1?'dn':'up')}">${o.newPosts>0?('✓ +'+o.newPosts+' hoje'):(o.daysSem===0?'✓ em dia':(o.daysSem!=null?'⚠ sem posts':'—'))}</div>
+      </div>
+      <div class="card"><div class="card-lbl">🎯 Pra comentar</div><div class="card-val" style="color:${tcColor}">${o.toCommentCount||0}</div><div class="card-sub" style="color:${tcColor}">${o.toCommentLabel}</div></div>
+    </div>
+    ${o.timeline.length ? `
+    <div class="sh"><div class="st">📈 Views por hora — últimas 24h</div><span style="font-size:11px;color:#2a2a2a">cada barra = 1 hora</span></div>
+    <div class="timeline">${o.timeline.map(t => `<div class="tbar" style="height:${Math.max(3,Math.round((t.views/maxTL)*100))}%" title="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : ''}
+    ${dailyHtml}
+    <div class="sh"><div class="st">Top 8 por views</div></div>
+    <div class="list">${top8Html}</div>
+    <div class="ts">Atualizado: ${new Date(o.fetchedAt).toLocaleString('pt-BR')} · ${o.albumsRead} posts lidos</div>
+  `;
+}
+
+function renderRanking(d){
+  const rows = d.ranking.map((a, i) => `
+    <div class="row">
+      <span class="row-n">#${i+1}</span>
+      <div class="row-main"><div class="row-t">${a.href ? `<a href="${e(a.href)}" target="_blank">${e(a.title)}</a>` : e(a.title)}</div></div>
+      <div class="row-meta"><span class="stat"><span class="i">👁</span>${fmt(a.views)}</span></div>
+    </div>`).join('');
+  return `<div class="sh"><div class="st">Ranking completo — ${d.ranking.length} posts</div></div><div class="list">${rows}</div>`;
+}
+
+function renderViral(d){
+  const v = d.viral;
+  if(!v.hasPrev) return emptyBox('Aguarde a próxima atualização (15-20 min)\npara ver o viral detector.');
+  if(!v.rows.length) return emptyBox('Nenhum álbum cresceu desde a última verificação.');
+  const alertsHtml = v.toCommentCount ? `<div class="alerts"><div class="alert gold">🎯 <span><strong>${v.toCommentCount} post(s) confirmados</strong> — hora de comentar!</span></div></div>` : '';
+  const rows = v.rows.map(a => {
+    const rowCls = a.confirmed ? 'confirmed' : (a.standout ? 'standout' : '');
+    const ratioTxt = a.ratio >= 2 ? Math.round(a.ratio) + '×' : '';
+    const icon = a.confirmed ? '🎯' : (a.standout && ratioTxt ? `<span class="vtag">${ratioTxt}</span>` : '');
+    const btn = a.confirmed ? `<button class="check-btn" data-mark="${e(a.id)}">✓ Comentei</button>` : '';
+    const link = a.href ? `<a href="${e(a.href)}" target="_blank">${e(a.title)}</a>` : e(a.title);
+    return `<div class="row ${rowCls}">
+      <span class="row-n">#${a.rank}</span>
+      <div class="row-main">${icon ? `<span style="flex-shrink:0">${icon}</span>` : ''}<div class="row-t">${link}</div></div>
+      <div class="row-meta"><span class="stat up">+${fmt(a.delta)}</span><span class="stat"><span class="i">👁</span>${fmt(a.views)}</span>${btn}</div>
+    </div>`;
+  }).join('');
+  return `${alertsHtml}
+    <div class="sh"><div class="st">Ranking por views ganhas</div><span style="font-size:11px;color:#2a2a2a">🔥 = destaque vs média da conta</span></div>
+    <div class="list">${rows}</div>`;
+}
+
+function renderCommented(d){
+  const c = d.commented;
+  if(!c.rows.length){
+    return `<div class="empty"><div class="empty-ic">📭</div><p>Nenhum comentário registrado ainda.</p>
+      <button class="btn" id="btn-scan" style="width:240px;margin-top:14px">🔍 Escanear CTAs nos álbuns</button>
+      <p id="scan-prog" style="font-size:11px;color:#444;margin-top:8px">Clique pra varrer seus álbuns automaticamente</p></div>`;
+  }
+  const goneAlert = c.goneCount ? `<div class="alerts"><div class="alert fire">🚨 <span><strong>${c.goneCount} CTA(s) sumiram</strong> dos comentários — verifique!</span></div></div>` : '';
+  const delAlert  = c.deletedCount ? `<div class="alerts"><div class="alert fire">🗑️ <span><strong>${c.deletedCount} vídeo(s) comentados foram deletados</strong> — continuam listados abaixo, em cinza.</span></div></div>` : '';
+  const summaryAlert = `<div class="alerts"><div class="alert ok">📊 <span>Vídeos com CTA pegaram <strong>${c.hasHourly?('+'+fmt(c.totalGain1h)):'—'} na última hora</strong> · <strong>${c.ctaTimeline.length?('+'+fmt(c.gain24hTotal)):'—'} nas últimas 24h</strong>${!c.hasHourly?' <span style="opacity:.6">(aguardando dados horários)</span>':''}</span></div></div>`;
+  const maxCtaTL = Math.max(...c.ctaTimeline.map(t => t.views), 1);
+  const tlHtml = c.ctaTimeline.length ? `
+    <div class="sh"><div class="st">📊 Views dos vídeos com CTA — últimas 24h</div><span style="font-size:11px;color:#2a2a2a">cada barra = 1 hora</span></div>
+    <div class="timeline timeline-cta">${c.ctaTimeline.map(t => `<div class="tbar-cta" style="height:${Math.max(3,Math.round((t.views/maxCtaTL)*100))}%" title="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : '';
+  const topHtml = c.topHours.length ? `
+    <div class="sh" style="margin-top:4px"><div class="st">🕐 Melhores horários pra comentar (acumulado)</div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+      ${c.topHours.map((h,i) => `<div class="daily-chip" style="border-color:#22cc5530"><span class="d" style="color:#22cc5577">${i===0?'🥇':i===1?'🥈':'🥉'} ${String(h.hour).padStart(2,'0')}h</span><span class="v">+${fmt(h.views)}</span><span class="l">acumulado</span></div>`).join('')}
+    </div>` : '';
+  const summaryHtml = c.ctaSummary.length ? `
+    <div class="sh" style="margin-top:4px"><div class="st">🔗 Resumo por CTA — pra onde tá indo o tráfego</div></div>
+    <div class="list" style="margin-bottom:18px">
+      ${c.ctaSummary.map(g => {
+        const unknown = g.keyword.startsWith('—');
+        return `<div class="row"><div class="row-main"><span class="cta-tag${unknown?' unknown':''}">${e(g.keyword)}</span></div>
+          <div class="row-meta"><span class="stat">${g.count} vídeo${g.count!==1?'s':''}</span>${c.hasHourly?`<span class="stat up">+${fmt(g.gain1h)}/h</span>`:''}<span class="stat up">+${fmt(g.gain24h)} em 24h</span></div></div>`;
+      }).join('')}
+    </div>` : '';
+  const rowsHtml = c.rows.map(r => {
+    const rowCls = r.isDeleted ? 'del' : (r.ctaOk === false ? 'gone' : 'done');
+    const ctaIcon = !d.ctaList.length ? '' : (!r.ctaChecked ? '⏳' : (r.ctaOk ? '🟢' : '🔴'));
+    const tempEmoji = r.tempIcon === 'fire' ? '🔥' : (r.tempIcon === 'ice' ? '🧊' : '');
+    const daysStr = r.days == null ? '' : r.days === 0 ? 'hoje' : r.days === 1 ? 'ontem' : r.days + ' dias atrás';
+    return `<div class="row ${rowCls}">
+      <div class="row-main">
+        ${r.isDeleted ? '<span title="Vídeo deletado">🗑️</span>' : (ctaIcon ? `<span title="status do CTA">${ctaIcon}</span>` : '')}
+        <div class="row-t">${r.href ? `<a href="${e(r.href)}" target="_blank">${e(r.title)}</a>` : e(r.title)}</div>
+      </div>
+      <div class="row-meta">
+        ${r.ctaFound ? `<span class="cta-tag">${e(r.ctaFound)}</span>` : ''}
+        ${r.isDeleted ? '<span class="stat" style="color:#ff2244;font-size:11px">deletado</span>' : ''}
+        ${tempEmoji ? `<span class="vtag">${tempEmoji}</span>` : ''}
+        ${r.gain1h != null ? `<span class="stat up">+${fmt(r.gain1h)}/h</span>` : ''}
+        ${r.gain24h != null ? `<span class="stat" style="color:#4db8ff">+${fmt(r.gain24h)}/24h</span>` : ''}
+        ${r.curViews != null ? `<span class="stat"><span class="i">👁</span>${fmt(r.curViews)}</span>` : ''}
+        <span class="stat" style="color:#7c8a85;font-size:12px">${daysStr}</span>
+        <button class="uncheck-btn" data-uncheck="${e(r.id)}">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `${goneAlert}${delAlert}${summaryAlert}${tlHtml}${topHtml}${summaryHtml}
+    <div class="sh">
+      <div class="st">Histórico de comentários — ${c.rows.length} posts</div>
+      <button class="tab-action" id="btn-scan">🔍 Escanear CTAs</button>
+      ${d.ctaList.length ? '<span style="font-size:11px;color:#333">🟢 CTA ok · 🔴 CTA sumiu · ⏳ não verificado</span>' : '<span style="font-size:11px;color:#ff224455">Cadastre CTAs na aba 🎯 CTAs</span>'}
+    </div>
+    <div id="scan-prog" style="font-size:11px;color:#0088ff;margin-bottom:8px;min-height:16px"></div>
+    <div class="list">${rowsHtml}</div>
+    <div class="ts">${c.rows.length} comentário(s) · última verificação: ${c.lastCheckedAt ? new Date(c.lastCheckedAt).toLocaleTimeString('pt-BR') : 'nunca'}</div>`;
+}
+
+function renderDeleted(d){
+  const t = d.deleted;
+  if(!t.log.length) return emptyBox('Nenhum post deletado detectado ainda.');
+  const rows = t.log.map(dd => `
+    <div class="row" style="${dd.hadCta?'border-color:#ff880050;background:#150f00':''}">
+      <div class="row-main">${dd.hadCta?'<span title="Tinha CTA quando foi deletado">🎯</span>':''}<div class="row-t del">${e(dd.title)}</div></div>
+      <div class="row-meta"><span class="stat"><span class="i">👁</span>${fmt(dd.views)}</span><span class="stat" style="color:#7c8a85;font-size:12px">${new Date(dd.at).toLocaleDateString('pt-BR')}</span></div>
+    </div>`).join('');
+  return `
+    <div class="alerts"><div class="alert warn">🗑 <span><strong>${t.log.length} post(s) deletados</strong>. Views perdidas: <strong>${fmt(t.lost)}</strong>.${t.ctaCount?` Desses, <strong>${t.ctaCount} tinham CTA ativo</strong> (${fmt(t.lostCta)} views com link comentado).`:''}</span></div></div>
+    <div class="sh"><div class="st">Histórico</div><button class="tab-danger" id="btn-clear-del">Limpar</button></div>
+    <div class="list">${rows}</div>`;
+}
+
+function renderCTAs(d){
+  const c = d.ctas;
+  const tags = c.ctaList.map(cta => `
+    <div style="display:flex;align-items:center;gap:6px;background:#0a0a0a;border:1px solid #ff224430;border-radius:20px;padding:5px 10px 5px 14px">
+      <span style="font-size:13px;color:#fff;font-family:'JetBrains Mono',monospace;font-weight:600">${e(cta)}</span>
+      <button data-rmcta="${e(cta)}" style="background:transparent;border:none;color:#ff224466;cursor:pointer;font-size:14px;padding:0 2px">✕</button>
+    </div>`).join('');
+  const goneHtml = c.goneEntries.length ? `
+    <div class="alerts"><div class="alert fire">🚨 <span><strong>${c.goneEntries.length} CTA(s) sumiram</strong> dos comentários!</span></div></div>
+    <div class="sh"><div class="st">Vídeos com CTA removido</div></div>
+    <div class="list">${c.goneEntries.map(g => `<div class="row gone">
+      <div class="row-main"><span>🔴</span><div class="row-t">${g.href?`<a href="${e(g.href)}" target="_blank">${e(g.title)}</a>`:e(g.title)}</div></div>
+      <div class="row-meta"><span class="stat" style="color:#ff7a8c;font-size:12px">verificado ${g.checkedAt?new Date(g.checkedAt).toLocaleTimeString('pt-BR'):'—'}</span></div>
+    </div>`).join('')}</div>` : ((c.hasChecks && c.ctaList.length) ? '<div class="alerts"><div class="alert ok">✅ <span>Todos os CTAs estão presentes nos comentários!</span></div></div>' : '');
+  return `
+    <div class="sh"><div class="st">Gerenciar CTAs</div></div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-lbl" style="margin-bottom:12px">Palavras-chave a monitorar</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">${c.ctaList.length ? tags : '<span style="font-size:12px;color:#333">Nenhum CTA cadastrado ainda.</span>'}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <input id="cta-input" class="input" type="text" placeholder="ex: NEZBRASIL" style="flex:1;min-width:140px;font-family:'JetBrains Mono',monospace;text-transform:uppercase" autocomplete="off" spellcheck="false">
+        <button id="cta-add-btn" class="btn" style="width:auto;padding:11px 18px">＋ Adicionar</button>
+      </div>
+      <div class="hint" style="margin-top:10px">💡 O sistema verifica se essas palavras aparecem nos comentários dos vídeos marcados. Se sumir → alerta imediato.</div>
+    </div>
+    ${goneHtml}
+  `;
+}
+
+function renderOnboard(){
+  return `<div id="onboard">
+    <div style="font-size:48px">📊</div>
+    <h2>Erome Analytics</h2>
+    <p>Monitore views, viral, comentários e muito mais — direto do servidor, 24/7.</p>
+    <div class="form-card">
+      <label style="font-size:11px;color:#ff2244;font-weight:600;text-transform:uppercase">Username do Erome</label>
+      <input class="input" id="ob-in" type="text" placeholder="ex: ModoNoturnoBR" autocomplete="off" spellcheck="false">
+      <button class="btn" id="ob-ok">＋ Adicionar e carregar</button>
+    </div>
+  </div>`;
+}
+function bindOnboard(){
+  const go = async () => { const v = document.getElementById('ob-in')?.value || ''; if(v.trim()) await doAddAccount(v.trim()); };
+  document.getElementById('ob-ok')?.addEventListener('click', go);
+  document.getElementById('ob-in')?.addEventListener('keydown', ev => { if(ev.key === 'Enter') go(); });
+}
+
+function renderModal(){
+  document.getElementById('modal-root').innerHTML = `
+    <div id="modal-overlay">
+      <div class="modal-box">
+        <h3>Adicionar <span>conta</span></h3>
+        <label>Username</label>
+        <input class="input" id="modal-in" type="text" placeholder="ex: ModoNoturnoBR" autocomplete="off" spellcheck="false">
+        <div class="modal-actions">
+          <button class="btn-ghost" id="modal-cancel">Cancelar</button>
+          <button class="btn" id="modal-ok">Adicionar</button>
+        </div>
+      </div>
+    </div>`;
+  const go = async () => { const v = document.getElementById('modal-in')?.value || ''; if(v.trim()) await doAddAccount(v.trim()); };
+  document.getElementById('modal-ok')?.addEventListener('click', go);
+  document.getElementById('modal-in')?.addEventListener('keydown', ev => { if(ev.key === 'Enter') go(); if(ev.key === 'Escape'){ addOpen = false; render(); } });
+  document.getElementById('modal-cancel')?.addEventListener('click', () => { addOpen = false; render(); });
+  document.getElementById('modal-overlay')?.addEventListener('click', ev => { if(ev.target.id === 'modal-overlay'){ addOpen = false; render(); } });
+  setTimeout(() => document.getElementById('modal-in')?.focus(), 30);
+}
+
+function bindBodyEvents(d){
+  document.querySelectorAll('.check-btn[data-mark]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.mark;
+      const a = (dashboards[activeAcc].viral.rows || []).find(r => r.id === id);
+      if(a) doMarkCommented(activeAcc, a);
+    });
+  });
+  document.querySelectorAll('.uncheck-btn[data-uncheck]').forEach(btn => {
+    btn.addEventListener('click', () => doUnmarkCommented(activeAcc, btn.dataset.uncheck));
+  });
+  document.getElementById('btn-scan')?.addEventListener('click', () => doScan(activeAcc));
+  document.getElementById('btn-clear-del')?.addEventListener('click', () => doClearDeleted(activeAcc));
+  const ctaAdd = () => {
+    const inp = document.getElementById('cta-input');
+    const v = (inp?.value || '').trim().toUpperCase();
+    if(!v) return;
+    inp.value = '';
+    doAddCta(activeAcc, v);
+  };
+  document.getElementById('cta-add-btn')?.addEventListener('click', ctaAdd);
+  document.getElementById('cta-input')?.addEventListener('keydown', ev => { if(ev.key === 'Enter') ctaAdd(); });
+  document.querySelectorAll('[data-rmcta]').forEach(btn => btn.addEventListener('click', () => doRemoveCta(activeAcc, btn.dataset.rmcta)));
+}
+
+// ====================== BOOT ======================
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadAccounts();
+  if(activeAcc) await loadDashboard(activeAcc);
+  setInterval(async () => {
+    await loadAccounts();
+    if(activeAcc) await loadDashboard(activeAcc);
+  }, 60000);
+});
+</script>
+</body>
+</html>
