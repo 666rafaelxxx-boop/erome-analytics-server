@@ -244,11 +244,17 @@ def _fmt_views(n):
     if n >= 1_000:     return f'{n/1_000:.1f}K'.replace('.', ',')
     return str(n)
 
-def _title_link(title, href):
+def _trunc(text, n=45):
+    text = (text or 'Sem título').strip()
+    return text[:n].rstrip() + '…' if len(text) > n else text
+
+def _title_link(title, href, n=45):
     """Título do vídeo virando link tocável na notificação (em vez de só texto) —
     assim dá pra ir direto pro vídeo a partir do Telegram, sem precisar abrir o painel."""
-    t = (title or 'Sem título')[:60]
+    t = _trunc(title, n)
     return f'<a href="{href}">{t}</a>' if href else f'"{t}"'
+
+TG_DIVIDER = '──────────────'
 
 # ================================================================
 # HELPERS DE TEMPO / NÚMERO
@@ -479,14 +485,14 @@ def detect_deleted(u, curr, prev):
         if had_cta:
             print(f'[DELETED] Vídeo com CTA deletado (confirmado em 2 ciclos) em @{u}: {info["title"][:50]}')
             send_telegram(
-                f'🗑️ <b>VÍDEO COM CTA DELETADO</b>\n@{u}\n"{info["title"][:60]}"\n'
+                f'🗑️ <b>Vídeo com CTA deletado</b>\n🔴 @{u}\n"{_trunc(info["title"])}"\n'
                 f'Esse post tinha seu link comentado e saiu do ar.'
             )
         else:
             print(f'[DELETED] Vídeo deletado (confirmado em 2 ciclos) em @{u}: {info["title"][:50]}')
             send_telegram(
-                f'🗑️ <b>Vídeo deletado</b>\n@{u}\n"{info["title"][:60]}"\n'
-                f'+{_fmt_views(info["views"])} views perdidas (não tinha CTA comentado).'
+                f'🗑️ <b>Vídeo deletado</b>\n🔴 @{u}\n"{_trunc(info["title"])}"\n'
+                f'<b>+{_fmt_views(info["views"])}</b> views perdidas (não tinha CTA comentado).'
             )
 
     # Marca os que desapareceram NESTE ciclo como suspeitos — só confirma se sumirem de
@@ -927,7 +933,7 @@ def check_ctas_for(u):
             if prev and prev.get('ok') and not found:
                 print(f'[CTA] SUMIU em @{u} — {c.get("title","")[:50]}')
                 send_telegram(
-                    f'🚨 <b>CTA SUMIU DOS COMENTÁRIOS</b>\n@{u}\n{_title_link(c.get("title",""), c.get("href"))}\n'
+                    f'🚨 <b>CTA sumiu dos comentários</b>\n🔴 @{u}\n{_title_link(c.get("title",""), c.get("href"))}\n'
                     f'Nenhum dos seus CTAs foi encontrado — pode ter sido removido ou apagado.'
                 )
             time.sleep(0.6)
@@ -1106,8 +1112,8 @@ def check_viral_alerts(u):
         if streak.get(a['id'], 0) != 1 or a['id'] in comm:
             continue  # só na 1a hora de destaque, e só se ainda não tem CTA
         send_telegram(
-            f'👀 <b>Começando a se destacar</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
-            f'+{_fmt_views(a["delta"])} na última hora — de olho, ainda sem confirmar.'
+            f'👀 <b>Começando a se destacar</b>\n🔴 @{u}\n{_title_link(a["title"], a.get("href"))}\n'
+            f'<b>+{_fmt_views(a["delta"])}</b> na última hora — de olho, ainda sem confirmar.'
         )
 
     for a in confirmed:
@@ -1116,13 +1122,13 @@ def check_viral_alerts(u):
         was_commented = a['id'] in comm
         if was_commented:
             send_telegram(
-                f'🔄 <b>RENOVAR COMENTÁRIO</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
+                f'🔄 <b>Renovar comentário</b>\n🔴 @{u}\n{_title_link(a["title"], a.get("href"))}\n'
                 f'Já comentou antes — vale ir de novo!'
             )
         else:
             send_telegram(
-                f'🎯 <b>HORA DE COMENTAR!</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
-                f'+{_fmt_views(a["delta"])} views na última hora — viralizando de verdade!'
+                f'🎯 <b>Hora de comentar!</b>\n🔴 @{u}\n{_title_link(a["title"], a.get("href"))}\n'
+                f'<b>+{_fmt_views(a["delta"])}</b> views na última hora — viralizando de verdade!'
             )
 
 def viral_refresh_all():
@@ -1171,10 +1177,10 @@ def build_account_digest_section(u, hours=3):
     if gain is None:
         return None  # conta muito nova, ainda sem histórico de algumas horas
 
-    lines = [f'<b>@{u}</b>', f'Views ganhas nas últimas {hours}h: +{_fmt_views(gain)}']
+    lines = [f'🔴 <b>@{u}</b>', f'Views ganhas ({hours}h): <b>+{_fmt_views(gain)}</b>']
     if cta_ids:
         gain_cta = get_views_gained_window(u, hours, id_set=cta_ids)
-        lines.append(f'Dos vídeos com CTA, nas mesmas {hours}h: +{_fmt_views(gain_cta)}')
+        lines.append(f'Dos vídeos com CTA: <b>+{_fmt_views(gain_cta)}</b>')
 
     seen, opportunities = set(), []
     for a in get_confirmed_viral(u) + get_standout(u):
@@ -1183,8 +1189,10 @@ def build_account_digest_section(u, hours=3):
         seen.add(a['id'])
         opportunities.append(a)
     opportunities.sort(key=lambda a: -a['delta'])
-    for a in opportunities[:3]:
-        lines.append(f'🔥 {_title_link(a["title"], a.get("href"))} — bombando a +{_fmt_views(a["delta"])} views/hora (ainda sem CTA)')
+    if opportunities:
+        lines.append('🔥 <i>Bombando, ainda sem CTA:</i>')
+        for i, a in enumerate(opportunities[:3], 1):
+            lines.append(f'{i}. {_title_link(a["title"], a.get("href"), n=40)} — +{_fmt_views(a["delta"])}/h')
 
     return '\n'.join(lines)
 
@@ -1192,7 +1200,8 @@ def send_digest_all(hours=3):
     sections = [s for s in (build_account_digest_section(u, hours) for u in list(ACCOUNTS)) if s]
     if not sections:
         return
-    send_telegram(f'📊 <b>Resumo das últimas {hours}h</b>\n\n' + '\n\n'.join(sections))
+    body = f'\n{TG_DIVIDER}\n'.join(sections)
+    send_telegram(f'📊 <b>Resumo · últimas {hours}h</b>\n{TG_DIVIDER}\n\n{body}')
 
 # ================================================================
 # LOOP EM BACKGROUND — 3 timers, igual ao userscript (15-20min / 1h / 10min)
