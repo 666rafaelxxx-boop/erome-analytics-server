@@ -77,9 +77,17 @@ html,body{background:#0a0a0a;color:#f0f0f0;font-family:Inter,-apple-system,sans-
 
 .timeline{display:flex;align-items:flex-end;gap:2px;height:72px;margin-bottom:6px;
   background:#080808;border:1px solid #ff224412;border-radius:10px;padding:10px 12px;overflow:hidden}
-.tbar{flex:1;min-width:3px;background:linear-gradient(180deg,#ff2244cc,#ff224430);border-radius:2px 2px 0 0;min-height:3px}
+.tbar{flex:1;min-width:3px;background:linear-gradient(180deg,#ff2244cc,#ff224430);border-radius:2px 2px 0 0;min-height:3px;cursor:pointer;transition:opacity .15s}
+.tbar:hover{opacity:.75}
+.tbar:hover::after{content:attr(data-tip);position:fixed;background:#0d0d0d;border:1px solid #ff224460;border-radius:7px;
+  padding:6px 10px;font-size:12px;color:#fff;white-space:nowrap;font-family:'JetBrains Mono',monospace;
+  z-index:300;pointer-events:none;margin-top:-44px}
 .timeline-cta{border-color:#22cc5520}
-.tbar-cta{flex:1;min-width:3px;background:linear-gradient(180deg,#22cc55cc,#22cc5530);border-radius:2px 2px 0 0;min-height:3px}
+.tbar-cta{flex:1;min-width:3px;background:linear-gradient(180deg,#22cc55cc,#22cc5530);border-radius:2px 2px 0 0;min-height:3px;cursor:pointer;transition:opacity .15s}
+.tbar-cta:hover{opacity:.75}
+.tbar-cta:hover::after{content:attr(data-tip);position:fixed;background:#0d0d0d;border:1px solid #22cc5560;border-radius:7px;
+  padding:6px 10px;font-size:12px;color:#fff;white-space:nowrap;font-family:'JetBrains Mono',monospace;
+  z-index:300;pointer-events:none;margin-top:-44px}
 
 .alerts{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
 .alert{display:flex;gap:10px;align-items:flex-start;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.5}
@@ -121,8 +129,12 @@ html,body{background:#0a0a0a;color:#f0f0f0;font-family:Inter,-apple-system,sans-
   padding:3px 8px;cursor:pointer;font-family:Inter,sans-serif;transition:all .15s;flex-shrink:0;line-height:1}
 .uncheck-btn:hover{background:#22cc5515;border-color:#22cc55;color:#22cc55}
 
+.chip-strip{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;margin-bottom:18px;
+  scrollbar-width:thin;scrollbar-color:#ff224430 transparent;-webkit-overflow-scrolling:touch}
+.chip-strip::-webkit-scrollbar{height:6px}
+.chip-strip::-webkit-scrollbar-thumb{background:#ff224440;border-radius:3px}
 .daily-chip{background:#111;border:1px solid #ff224418;border-radius:9px;padding:10px 14px;
-  display:flex;flex-direction:column;gap:4px;min-width:90px}
+  display:flex;flex-direction:column;gap:4px;min-width:90px;flex-shrink:0}
 .daily-chip .d{font-size:10px;color:#ff224466;font-weight:600;text-transform:uppercase;letter-spacing:.06em}
 .daily-chip .v{font-size:18px;font-weight:700;color:#22cc55;font-family:'JetBrains Mono',monospace}
 .daily-chip .l{font-size:10px;color:#333}
@@ -277,8 +289,16 @@ async function doRemoveAccount(u){
   await loadAccounts();
 }
 async function doRefresh(u){
+  // Feedback otimista: muda o status JÁ na hora do clique, sem esperar o servidor
+  // responder — é isso que dá a sensação de "aconteceu algo" instantaneamente.
+  if(u){
+    const acc = accounts.find(a => a.username === u);
+    if(acc) acc.state = 'loading';
+  } else {
+    accounts.forEach(a => a.state = 'loading');
+  }
+  render();
   await api('/admin/api/refresh', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(u ? {username:u} : {})});
-  toast(u ? ('Atualizando @' + u + '...') : 'Atualizando todas as contas...', true, 4000);
   pollAccountLoading(u);
 }
 function pollAccountLoading(u){
@@ -287,13 +307,13 @@ function pollAccountLoading(u){
   loadingPollTimer = setInterval(async () => {
     tries++;
     await loadAccounts();
-    const acc = u ? accounts.find(a => a.username === u) : null;
-    const stillLoading = u ? (acc && acc.state === 'loading') : accounts.some(a => a.state === 'loading');
-    if(!stillLoading || tries > 60){
+    const stillLoading = u ? accounts.some(a => a.username === u && a.state === 'loading')
+                            : accounts.some(a => a.state === 'loading');
+    if(!stillLoading || tries > 150){
       clearInterval(loadingPollTimer);
       if(activeAcc) await loadDashboard(activeAcc);
     }
-  }, 3000);
+  }, 1200);
 }
 async function doMarkCommented(u, a){
   await api('/admin/api/mark-commented', {method:'POST', headers:{'Content-Type':'application/json'},
@@ -347,10 +367,12 @@ function render(){
 }
 
 function renderHeader(){
+  const loadingN = accounts.filter(a => a.state === 'loading').length;
+  const refAllLabel = loadingN ? `↻ Atualizando ${loadingN}/${accounts.length}…` : '↻ Atualizar tudo';
   $('#hd').innerHTML = `
     <span class="logo-mark"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="9" width="3" height="6" rx="1" fill="#ff2244"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#ff2244"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#ff2244"/></svg></span>
     <div id="hd-title"><span class="live-dot"></span>Erome <span>Analytics</span></div>
-    ${accounts.length ? '<button class="hbtn" id="btn-ref-all">↻ Atualizar tudo</button>' : ''}
+    ${accounts.length ? `<button class="hbtn" id="btn-ref-all" ${loadingN?'disabled':''}>${refAllLabel}</button>` : ''}
     <button class="hbtn" id="btn-import" title="Importar backup antigo (botão ⇩ Exportar do Tampermonkey)">⇧ Importar</button>
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="hbtn" id="btn-add">+ Conta</button>
@@ -409,6 +431,8 @@ function renderSectionTabs(d){
   const confN  = d.viral.toCommentCount;
   const delN   = d.deleted.log.length;
   const ctaN   = d.ctaList.length;
+  const accInfo = accounts.find(a => a.username === activeAcc);
+  const loadingThis = accInfo && accInfo.state === 'loading';
   wrap.innerHTML = `
     <button class="tab ${activeTab==='overview'?'on':''}" data-t="overview">Visão Geral</button>
     <button class="tab ${activeTab==='ranking'?'on':''}" data-t="ranking">Ranking</button>
@@ -417,7 +441,7 @@ function renderSectionTabs(d){
     <button class="tab ${activeTab==='deleted'?'on':''}" data-t="deleted">Deletados${delN?`<span class="badge">${delN}</span>`:''}</button>
     <button class="tab ${activeTab==='ctas'?'on':''}" data-t="ctas">🎯 CTAs${ctaN?`<span class="badge">${ctaN}</span>`:''}</button>
     <div class="tab-spacer"></div>
-    <button class="tab-action" id="btn-ref-one">↻ Atualizar</button>
+    <button class="tab-action" id="btn-ref-one" ${loadingThis?'disabled':''}>${loadingThis?'↻ Atualizando…':'↻ Atualizar'}</button>
     <button class="tab-danger" id="btn-remove">✕ Remover conta</button>
   `;
   wrap.querySelectorAll('.tab[data-t]').forEach(el => el.addEventListener('click', () => { activeTab = el.dataset.t; render(); }));
@@ -431,18 +455,26 @@ function renderBody(d){
   const body = $('#body');
   if(!accounts.length){ body.innerHTML = renderOnboard(); bindOnboard(); return; }
   if(!activeAcc){ body.innerHTML = emptyBox('Selecione uma conta acima.'); return; }
+
+  // O status real (que vem do polling rápido de /admin/api/accounts) manda mais do
+  // que o payload do dashboard, que só é buscado de novo quando o carregamento termina.
+  // É isso que faz a "leitura de álbuns" virar uma tela de progresso instantânea,
+  // igual ao userscript fazia com live[u]='loading'.
+  const accInfo = accounts.find(a => a.username === activeAcc);
+  if(accInfo && accInfo.state === 'loading'){
+    body.innerHTML = `<div class="loading-box"><div class="spin"></div>
+      <p>Lendo álbuns de @${e(activeAcc)}…</p>
+      <small style="color:#555">${e(accInfo.progress || 'Iniciando…')}</small></div>`;
+    return;
+  }
+  if(accInfo && accInfo.state === 'error' && (!d || !d.hasData)){
+    body.innerHTML = `<div class="empty"><div class="empty-ic">❌</div><p>Erro ao carregar @${e(activeAcc)}: ${e(accInfo.message||'')}</p>
+      <button class="btn" id="btn-retry" style="width:180px;margin-top:10px">Tentar novamente</button></div>`;
+    document.getElementById('btn-retry')?.addEventListener('click', () => doRefresh(activeAcc));
+    return;
+  }
   if(!d){ body.innerHTML = `<div class="loading-box"><div class="spin"></div><p>Carregando @${e(activeAcc)}…</p></div>`; return; }
   if(!d.hasData){
-    if(d.state === 'loading'){
-      body.innerHTML = `<div class="loading-box"><div class="spin"></div><p>Lendo álbuns de @${e(activeAcc)}… (1ª leitura pode levar 1-2 min)</p></div>`;
-      return;
-    }
-    if(d.state === 'error'){
-      body.innerHTML = `<div class="empty"><div class="empty-ic">❌</div><p>Erro ao carregar @${e(activeAcc)}: ${e(d.message||'')}</p>
-        <button class="btn" id="btn-retry" style="width:180px;margin-top:10px">Tentar novamente</button></div>`;
-      document.getElementById('btn-retry')?.addEventListener('click', () => doRefresh(activeAcc));
-      return;
-    }
     body.innerHTML = `<div class="empty"><div class="empty-ic">⏳</div><p>Ainda sem dados.</p>
       <button class="btn" id="btn-load-now" style="width:180px;margin-top:10px">Carregar agora</button></div>`;
     document.getElementById('btn-load-now')?.addEventListener('click', () => doRefresh(activeAcc));
@@ -477,7 +509,7 @@ function renderOverview(o_d){
     </div>`).join('');
   const dailyHtml = o.dailyHistory.length ? `
     <div class="sh" style="margin-top:4px"><div class="st">📅 Histórico diário</div></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
+    <div class="chip-strip">
       ${o.dailyHistory.map(dd => `<div class="daily-chip"><span class="d">${e(dd.date)}</span><span class="v">+${fmt(dd.views)}</span><span class="l">views ganhas</span></div>`).join('')}
     </div>` : '';
   const tcColor = o.toCommentLabel === 'confirmados' ? '#ff8800' : (o.toCommentLabel === 'em destaque' ? '#ff8800aa' : '#fff');
@@ -502,7 +534,7 @@ function renderOverview(o_d){
     </div>
     ${o.timeline.length ? `
     <div class="sh"><div class="st">📈 Views por hora — últimas 24h</div><span style="font-size:11px;color:#2a2a2a">cada barra = 1 hora</span></div>
-    <div class="timeline">${o.timeline.map(t => `<div class="tbar" style="height:${Math.max(3,Math.round((t.views/maxTL)*100))}%" title="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : ''}
+    <div class="timeline">${o.timeline.map(t => `<div class="tbar" style="height:${Math.max(3,Math.round((t.views/maxTL)*100))}%" data-tip="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : ''}
     ${dailyHtml}
     <div class="sh"><div class="st">Top 8 por views</div></div>
     <div class="list">${top8Html}</div>
@@ -555,7 +587,7 @@ function renderCommented(d){
   const maxCtaTL = Math.max(...c.ctaTimeline.map(t => t.views), 1);
   const tlHtml = c.ctaTimeline.length ? `
     <div class="sh"><div class="st">📊 Views dos vídeos com CTA — últimas 24h</div><span style="font-size:11px;color:#2a2a2a">cada barra = 1 hora</span></div>
-    <div class="timeline timeline-cta">${c.ctaTimeline.map(t => `<div class="tbar-cta" style="height:${Math.max(3,Math.round((t.views/maxCtaTL)*100))}%" title="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : '';
+    <div class="timeline timeline-cta">${c.ctaTimeline.map(t => `<div class="tbar-cta" style="height:${Math.max(3,Math.round((t.views/maxCtaTL)*100))}%" data-tip="${t.label}: +${fmt(t.views)} views"></div>`).join('')}</div>` : '';
   const topHtml = c.topHours.length ? `
     <div class="sh" style="margin-top:4px"><div class="st">🕐 Melhores horários pra comentar (acumulado)</div></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px">
@@ -686,6 +718,11 @@ function renderModal(){
 }
 
 function bindBodyEvents(d){
+  // Tooltip das barrinhas funciona por hover no desktop (CSS). No celular não existe
+  // hover, então um toque mostra a mesma informação via toast.
+  document.querySelectorAll('.tbar[data-tip], .tbar-cta[data-tip]').forEach(bar => {
+    bar.addEventListener('click', () => toast(bar.dataset.tip, true, 2500));
+  });
   document.querySelectorAll('.check-btn[data-mark]').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = btn.dataset.mark;
