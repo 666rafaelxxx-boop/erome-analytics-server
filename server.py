@@ -202,13 +202,19 @@ def parse_num(raw):
 # ================================================================
 # SCRAPING (com retries — mesma resiliência que foi adicionada no userscript)
 # ================================================================
-def fetch_with_retries(url, label, attempts=3):
+def fetch_with_retries(url, label, attempts=3, status_cb=None):
     last_err = None
     for attempt in range(1, attempts + 1):
         try:
+            if status_cb and attempt > 1:
+                status_cb(f'Tentando {label} de novo ({attempt}/{attempts})...')
             r = requests.get(url, headers=HEADERS, timeout=15)
             if r.status_code == 429:
-                wait = 60 * (2 ** (attempt - 1))
+                # Backoff bem mais curto que antes (era 60/120/240s — passava de
+                # 7 minutos de espera total e parecia "travado pra sempre" na tela).
+                wait = 20 * attempt
+                if status_cb:
+                    status_cb(f'Erome pediu uma pausa — aguardando {wait}s (tentativa {attempt}/{attempts})...')
                 print(f'[429] {label} — aguardando {wait}s (tentativa {attempt}/{attempts})...')
                 time.sleep(wait)
                 continue
@@ -232,32 +238,41 @@ def _parse_album_card(el):
     vspan = el.select_one('span.album-bottom-views')
     vraw  = re.sub(r'[^\d.,KMBkmb]', '', vspan.get_text()) if vspan else ''
     views = parse_num(vraw)
-    aid   = el.get('id', '').replace('album-', '')
-    if href:
-        m = re.search(r'/a/([a-zA-Z0-9]+)', href)
-        if m:
-            aid = m.group(1)
+    # Mesma fonte de ID que o userscript usa (SÓ o atributo id do elemento, sem
+    # tentar extrair nada da URL) — antes eu tinha um regex extra pegando o ID
+    # da href quando disponível, o que gerava um ID DIFERENTE do que o
+    # Tampermonkey sempre usou. Isso quebra silenciosamente a comparação entre
+    # o histórico importado do navegador e os dados novos lidos pelo servidor
+    # (álbuns "comentados" nunca encontram correspondência = aparecem como
+    # "deletados" mesmo existindo).
+    aid = el.get('id', '').replace('album-', '')
     if not aid:
         return None
     return {'id': aid, 'title': title, 'href': href, 'views': views}
 
-def scrape_profile(username, progress_cb=None):
+def scrape_profile(username, progress_cb=None, status_cb=None):
     try:
-        r = fetch_with_retries(f'https://www.erome.com/{username}?t=posts', f'página 1 de @{username}')
+        r = fetch_with_retries(f'https://www.erome.com/{username}?t=posts', f'página 1 de @{username}', status_cb=status_cb)
         soup = BeautifulSoup(r.text, 'html.parser')
 
         total_views, followers, album_count = 0, 0, 0
         ui = soup.select_one('.user-info')
-        if ui:
-            for span in ui.select(':scope > span'):
-                txt   = span.get_text()
-                nodes = [c for c in span.children if isinstance(c, str) and c.strip()]
-                raw   = nodes[0].strip() if nodes else (txt.split()[0] if txt.split() else '')
-                num   = parse_num(raw)
-                up    = txt.upper()
-                if 'ALBUM'  in up: album_count = num
-                if 'VIEW'   in up: total_views = num
-                if 'FOLLOW' in up: followers   = num
+        if not ui:
+            # Sem ".user-info" não é "conta sem dados" — é quase certo uma página de
+            # bloqueio/captcha do Erome (volume de requisições alto), não o perfil de
+            # verdade. Levanta erro explícito em vez de devolver "0 álbuns, 0 views",
+            # que seria tratado como sucesso e sobrescreveria o histórico bom.
+            raise Exception('Página de perfil não reconhecida — possível bloqueio temporário do Erome (tente de novo em alguns minutos)')
+
+        for span in ui.select(':scope > span'):
+            txt   = span.get_text()
+            nodes = [c for c in span.children if isinstance(c, str) and c.strip()]
+            raw   = nodes[0].strip() if nodes else (txt.split()[0] if txt.split() else '')
+            num   = parse_num(raw)
+            up    = txt.upper()
+            if 'ALBUM'  in up: album_count = num
+            if 'VIEW'   in up: total_views = num
+            if 'FOLLOW' in up: followers   = num
 
         av_el  = soup.select_one('img.avatar, .avatar img')
         avatar = av_el.get('src') if av_el else None
@@ -273,7 +288,7 @@ def scrape_profile(username, progress_cb=None):
         has_next = bool(soup.select_one('a[rel="next"]') or soup.select('.pagination .page-item:not(.active) a[href*="page="]'))
         page = 2
         while has_next:
-            r2 = fetch_with_retries(f'https://www.erome.com/{username}?t=posts&page={page}', f'página {page} de @{username}')
+            r2 = fetch_with_retries(f'https://www.erome.com/{username}?t=posts&page={page}', f'página {page} de @{username}', status_cb=status_cb)
             s2 = BeautifulSoup(r2.text, 'html.parser')
             new_ones = []
             for el in s2.select('div.album[id^="album-"]'):
@@ -745,6 +760,12 @@ def get_post_message(new_posts, days_sem):
 def fetch_album_comments(href):
     r = requests.get(href, headers=HEADERS, timeout=15)
     r.raise_for_status()
+    # Mesma proteção do scrape_profile: uma resposta curta/sem cara de página real do
+    # Erome é mais provável bloqueio/captcha do que "o álbum realmente não tem nada".
+    # Sem isso, um bloqueio temporário virava falso alarme de "CTA sumiu" em massa.
+    low = r.text.lower()
+    if len(r.text) < 1500 or 'checking your browser' in low or 'cf-browser-verification' in low or 'captcha' in low or 'attention required' in low:
+        raise Exception('Resposta suspeita ao ler comentários (possível bloqueio temporário)')
     return BeautifulSoup(r.text, 'html.parser')
 
 def _comment_text(soup):
@@ -877,11 +898,27 @@ def refresh_account(u):
             # vem do servidor via polling, pra você ver em tempo real o que está
             # sendo lido, mesmo se o navegador estiver fechado e você abrir depois.
             account_runtime[u]['progress'] = f'Página {page} · {count} álbuns…'
+        def _on_status(msg):
+            account_runtime[u]['progress'] = msg
 
-        data = scrape_profile(u, progress_cb=_on_progress)
+        data = scrape_profile(u, progress_cb=_on_progress, status_cb=_on_status)
         if data.get('error'):
             account_runtime[u] = {'state': 'error', 'message': data['error'], 'progress': ''}
             print(f'[REFRESH] Erro @{u}: {data["error"]}')
+            return
+
+        # ── BLINDAGEM CRÍTICA ──────────────────────────────────────────────
+        # Nunca aceita uma leitura com 0 álbuns se já existia histórico bom com
+        # álbuns > 0. Isso é o que causou o bug de "tudo aparecendo deletado":
+        # uma resposta vazia (bloqueio temporário) era tratada como sucesso
+        # legítimo e sobrescrevia o histórico todo. Agora isso é rejeitado e o
+        # histórico anterior fica intacto — só tenta de novo no próximo ciclo.
+        prev_check = current_snapshot(u)
+        if prev_check and prev_check.get('albumCount', 0) > 0 and data.get('albumCount', 0) == 0:
+            msg = (f'Resposta vazia/suspeita (0 álbuns, antes havia {prev_check["albumCount"]}) '
+                   f'— mantendo dados anteriores por segurança, tentando de novo no próximo ciclo.')
+            account_runtime[u] = {'state': 'error', 'message': msg, 'progress': ''}
+            print(f'[REFRESH] ⚠️ @{u}: {msg}')
             return
 
         with _state_lock:
@@ -905,17 +942,23 @@ def refresh_account(u):
         _refreshing.discard(u)
 
 def refresh_all():
-    # Antes era sequencial (conta por conta, esperando uma terminar pra começar a
-    # próxima) — em contas com bastante histórico isso fazia "Atualizar tudo" levar
-    # vários minutos parecendo travado. Agora atualiza várias contas em paralelo
-    # (até 4 ao mesmo tempo), bem mais rápido. O scraping de páginas DENTRO de uma
-    # mesma conta continua sequencial (é assim que a paginação funciona), só o
-    # paralelismo é ENTRE contas diferentes.
+    # Era sequencial (1 conta esperando a outra) — em contas com bastante histórico
+    # "Atualizar tudo" parecia travado por minutos. A correção anterior paralelizou
+    # 4 ao mesmo tempo, mas isso bombardeou o Erome com requisições demais de uma vez
+    # e ele aparentemente começou a devolver respostas de bloqueio temporário — foi
+    # isso que causou o bug de tudo aparecer "deletado". Agora: só 2 simultâneas,
+    # com um pequeno intervalo entre o início de cada uma — ainda bem mais rápido
+    # que sequencial puro, mas sem rajada de requisições.
     accs = list(ACCOUNTS)
     if not accs:
         return
-    with ThreadPoolExecutor(max_workers=min(4, len(accs))) as ex:
-        list(ex.map(refresh_account, accs))
+    def _staggered(item):
+        i, u = item
+        if i == 1:  # só escalona o início das 2 primeiras (as únicas que podem ficar concorrentes de verdade, já que max_workers=2) — da 3ª em diante, o próprio limite de workers já garante o espaçamento
+            time.sleep(2.0)
+        refresh_account(u)
+    with ThreadPoolExecutor(max_workers=min(2, len(accs))) as ex:
+        list(ex.map(_staggered, enumerate(accs)))
 
 def viral_refresh_all():
     for u in list(ACCOUNTS):
