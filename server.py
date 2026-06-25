@@ -527,6 +527,104 @@ def get_album_hourly_peak(u, album_id, hours_window=24):
         peak  = max(peak, delta)
     return peak
 
+# ================================================================
+# IMPORTAÇÃO DO BACKUP ANTIGO (botão "⇩ Exportar" do userscript Tampermonkey)
+# — migração única de histórico já acumulado no navegador pro servidor.
+# Os formatos são quase idênticos (foi feito de propósito), então a maior
+# parte é só mesclar listas/dicts sem perder nada que já existe nos dois lados.
+# ================================================================
+def _merge_snapshot_list(existing, incoming, cap, time_key):
+    combined = {}
+    for s in (existing or []) + (incoming or []):
+        key = s.get(time_key)
+        if key:
+            combined[key] = s
+    merged = sorted(combined.values(), key=lambda s: s[time_key], reverse=True)
+    return merged[:cap]
+
+def _merge_deleted_list(existing, incoming, cap=500):
+    seen = {d['id']: d for d in (incoming or []) if d.get('id')}
+    for d in (existing or []):  # existing tem prioridade se o mesmo id aparecer nos dois
+        if d.get('id'):
+            seen[d['id']] = d
+    return sorted(seen.values(), key=lambda d: d.get('at', ''), reverse=True)[:cap]
+
+def _merge_daily_history(existing, incoming, cap=30):
+    merged = list(existing or [])
+    have = {d['date'] for d in merged}
+    for d in (incoming or []):
+        if d.get('date') and d['date'] not in have:
+            merged.append(d)
+            have.add(d['date'])
+    return merged[:cap]
+
+def _merge_commented(existing, incoming):
+    merged = dict(incoming or {})
+    merged.update(existing or {})  # existing (já no servidor) sobrescreve em caso de conflito
+    return merged
+
+def _merge_cta_status(existing, incoming):
+    merged = dict(incoming or {})
+    for aid, v in (existing or {}).items():
+        old = merged.get(aid)
+        if not old or (v.get('checkedAt', '') >= old.get('checkedAt', '')):
+            merged[aid] = v
+    return merged
+
+def _merge_viral_streak(existing, incoming):
+    merged = dict(incoming or {})
+    for aid, v in (existing or {}).items():
+        merged[aid] = max(merged.get(aid, 0), v)
+    return merged
+
+def _merge_cta_hourly_agg(existing, incoming):
+    merged = dict(incoming or {})
+    for h, v in (existing or {}).items():
+        merged[h] = merged.get(h, 0) + v
+    return merged
+
+def import_legacy_export(data):
+    if not data or not isinstance(data.get('accounts'), list):
+        return {'ok': False, 'msg': 'Arquivo não reconhecido como backup do Erome Analytics (exporte de novo pelo botão ⇩ Exportar no Tampermonkey).'}
+
+    incoming_accounts = []
+    for a in data['accounts']:
+        name = a if isinstance(a, str) else (a.get('username') if isinstance(a, dict) else None)
+        if name:
+            incoming_accounts.append(name)
+    if not incoming_accounts:
+        return {'ok': False, 'msg': 'Nenhuma conta encontrada dentro do arquivo.'}
+
+    global_cta_list = [c.upper() for c in (data.get('ctaList') or [])]
+    added = []
+    for u in incoming_accounts:
+        if u not in ACCOUNTS:
+            ACCOUNTS.append(u)
+            added.append(u)
+
+        snapshots[u]      = _merge_snapshot_list(snapshots.get(u), (data.get('snapshots') or {}).get(u), 96, 'fetchedAt')
+        hourly_snaps[u]   = _merge_snapshot_list(hourly_snaps.get(u), (data.get('hourlySnaps') or {}).get(u), 48, 'at')
+        deleted[u]        = _merge_deleted_list(deleted.get(u), (data.get('deleted') or {}).get(u))
+        daily_history[u]  = _merge_daily_history(daily_history.get(u), (data.get('dailyHistory') or {}).get(u))
+        commented[u]      = _merge_commented(commented.get(u), (data.get('commented') or {}).get(u))
+        cta_status[u]     = _merge_cta_status(cta_status.get(u), (data.get('ctaStatus') or {}).get(u))
+        viral_streak[u]   = _merge_viral_streak(viral_streak.get(u), (data.get('viralStreak') or {}).get(u))
+        cta_hourly_agg[u] = _merge_cta_hourly_agg(cta_hourly_agg.get(u), (data.get('ctaHourlyAgg') or {}).get(u))
+
+        # O CTA list do userscript antigo é global (vale pra todas as contas) — aplica em cada uma sem duplicar
+        lst = cta_config.setdefault(u, [])
+        for c in global_cta_list:
+            if c not in lst:
+                lst.append(c)
+
+    save_data()
+    snap_counts = {u: len(snapshots.get(u, [])) for u in incoming_accounts}
+    return {
+        'ok': True, 'accounts': incoming_accounts, 'addedAccounts': added,
+        'msg': f'Histórico mesclado em {len(incoming_accounts)} conta(s)! ' +
+               ', '.join(f'@{u}: {n} snapshots' for u, n in snap_counts.items()),
+    }
+
 def get_viral(u):
     m = current_snapshot(u)
     if not m:
@@ -1273,6 +1371,19 @@ def api_scan():
         return jsonify({'ok': False}), 400
     threading.Thread(target=scan_all_albums, args=(u,), daemon=True).start()
     return jsonify({'ok': True})
+
+@app.route('/admin/api/import', methods=['POST'])
+def api_import():
+    try:
+        if 'file' in request.files:
+            raw = request.files['file'].read()
+            data = json.loads(raw)
+        else:
+            data = request.get_json(force=True)
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': f'Arquivo inválido: {e}'}), 400
+    result = import_legacy_export(data)
+    return jsonify(result), (200 if result.get('ok') else 400)
 
 @app.route('/admin/api/scan-status')
 def api_scan_status():
