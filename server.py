@@ -1,7 +1,9 @@
-# Erome Analytics Server
-# Roda no Railway — scrapa dados públicos do Erome e serve via API
+# Erome Analytics Server — v2.0 (full dashboard)
+# Roda no Railway 24/7 — scrapa dados públicos do Erome, calcula viral/streak/
+# histórico/CTA igual ao userscript Tampermonkey, e serve um painel /admin
+# completo e responsivo (sem precisar do navegador/PC do Rafael ligado).
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -10,69 +12,144 @@ import re
 import json
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
-DATA_FILE = '/tmp/erome_data.json'
+# ================================================================
+# CONFIG / PERSISTÊNCIA
+# ================================================================
+# IMPORTANTE: no Railway, "/tmp" NÃO é permanente — é zerado a cada redeploy
+# ou reinício do container. Pra não perder histórico, isso precisa apontar
+# pra um Railway Volume (disco persistente). Configure assim no Railway:
+#   1. No seu serviço → aba "Volumes" → "+ New Volume"
+#   2. Mount path: /data
+#   3. Pronto — esse caminho passa a sobreviver a redeploys/restarts.
+# Se quiser usar outro caminho, defina a env var DATA_DIR no Railway.
+DATA_DIR  = os.environ.get('DATA_DIR', '/data')
+DATA_FILE = os.path.join(DATA_DIR, 'erome_data.json')
+TZ        = ZoneInfo('America/Sao_Paulo')  # horário de Rafael — usado em TUDO que é "hora do dia"
+
+_state_lock = threading.RLock()  # protege leitura/escrita do estado global + arquivo
+
+def _empty_state():
+    return {
+        'accounts':         [],
+        'cta_config':       {},   # {username: [CTA1, CTA2, ...]}
+        'cta_status':       {},   # {username: {albumId: {ok, foundCta, checkedAt}}}
+        'commented':        {},   # {username: {albumId: {at, title, href, baselineViews, autoDetected, lastCta}}}
+        'snapshots':        {},   # {username: [snap, ...]} snap0 = mais recente
+        'hourly_snaps':     {},   # {username: [snap, ...]} versão leve, 1 por hora
+        'viral_streak':     {},   # {username: {albumId: streakCount}}
+        'deleted':          {},   # {username: [{id,title,views,at,hadCta}, ...]}
+        'daily_history':    {},   # {username: [{date,views,savedAt}, ...]}
+        'cta_hourly_agg':   {},   # {username: {"0":views,...,"23":views}} acumulado dia a dia
+    }
 
 def load_data():
-    # 1. Tenta arquivo /tmp
+    state = _empty_state()
+    raw = None
     try:
         if os.path.exists(DATA_FILE):
             with open(DATA_FILE, 'r') as f:
-                data = json.load(f)
-                if data and data.get('accounts'):
-                    return data
-    except: pass
-    # 2. Tenta variavel de ambiente EROME_DATA (configurada no Railway)
-    try:
-        env_data = os.environ.get('EROME_DATA', '')
-        if env_data:
-            return json.loads(env_data)
-    except: pass
-    # 3. Tenta variaveis individuais (mais simples de manter no Railway)
-    accounts = []
-    cta_cfg  = {}
-    try:
-        acc_env = os.environ.get('EROME_ACCOUNTS', '')
-        if acc_env:
-            accounts = [a.strip() for a in acc_env.split(',') if a.strip()]
-    except: pass
-    try:
-        cta_env = os.environ.get('EROME_CTAS', '')
-        if cta_env:
-            cta_cfg = json.loads(cta_env)
-    except: pass
-    if accounts:
-        return {'accounts': accounts, 'cta_config': cta_cfg}
-    return {}
+                raw = json.load(f)
+    except Exception as e:
+        print(f'[LOAD] Erro lendo {DATA_FILE}: {e}')
+
+    # Migração de versão anterior: o app.py antigo sempre salvava em /tmp/erome_data.json
+    # (sem volume persistente). Se o arquivo novo (no volume) ainda não existe mas esse
+    # antigo existe, importa ele automaticamente — assim você não perde as contas/CTAs
+    # que já tinha configurado antes desta atualização.
+    LEGACY_TMP_FILE = '/tmp/erome_data.json'
+    if not raw and DATA_FILE != LEGACY_TMP_FILE and os.path.exists(LEGACY_TMP_FILE):
+        try:
+            with open(LEGACY_TMP_FILE, 'r') as f:
+                raw = json.load(f)
+            print(f'[MIGRATE] Importado {LEGACY_TMP_FILE} (versão antiga, sem volume) para {DATA_FILE}')
+        except Exception as e:
+            print(f'[MIGRATE] Erro lendo arquivo legado: {e}')
+
+    if not raw:
+        # Fallback pra variáveis de ambiente, útil só na primeiríssima configuração
+        try:
+            acc_env = os.environ.get('EROME_ACCOUNTS', '')
+            if acc_env:
+                state['accounts'] = [a.strip() for a in acc_env.split(',') if a.strip()]
+            cta_env = os.environ.get('EROME_CTAS', '')
+            if cta_env:
+                state['cta_config'] = json.loads(cta_env)
+        except Exception:
+            pass
+        return state
+
+    for key in state.keys():
+        if key in raw:
+            state[key] = raw[key]
+
+    # Migração: versões antigas guardavam "commented_albums" como LISTA por
+    # conta (só id/title/href, sem CTA nem baseline). Se existir isso e ainda
+    # não tiver sido migrado pro formato novo (dict), converte uma vez.
+    old_commented = raw.get('commented_albums')
+    if old_commented and not state.get('commented'):
+        migrated = {}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for user, albums in old_commented.items():
+            migrated[user] = {}
+            for a in albums:
+                aid = a.get('id')
+                if not aid:
+                    continue
+                migrated[user][aid] = {
+                    'at': now_iso, 'title': a.get('title', ''), 'href': a.get('href', ''),
+                    'baselineViews': None, 'autoDetected': True, 'lastCta': None,
+                }
+        state['commented'] = migrated
+        print(f'[MIGRATE] commented_albums (lista antiga) migrado para {len(migrated)} conta(s)')
+
+    return state
 
 def save_data():
-    data = {
-        'accounts':         ACCOUNTS,
-        'cta_config':       cta_config,
-        'cta_status':       cta_status,
-        'commented_albums': commented_albums,
-        'view_history':     view_history,
-    }
-    # Salva em /tmp
-    try:
-        with open(DATA_FILE, 'w') as f:
-            json.dump(data, f)
-    except Exception as e:
-        print(f'[SAVE] Erro arquivo: {e}')
-    print(f'[SAVE] {len(ACCOUNTS)} contas | CTAs: {list(cta_config.keys())}')
+    with _state_lock:
+        payload = {
+            'accounts':       ACCOUNTS,
+            'cta_config':     cta_config,
+            'cta_status':     cta_status,
+            'commented':      commented,
+            'snapshots':      snapshots,
+            'hourly_snaps':   hourly_snaps,
+            'viral_streak':   viral_streak,
+            'deleted':        deleted,
+            'daily_history':  daily_history,
+            'cta_hourly_agg': cta_hourly_agg,
+        }
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            tmp_path = DATA_FILE + '.tmp'
+            with open(tmp_path, 'w') as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, DATA_FILE)  # escrita atômica — evita arquivo corrompido se cair no meio
+        except Exception as e:
+            print(f'[SAVE] Erro: {e}')
 
 app = Flask(__name__)
 
-# ── CONFIGURAÇÃO ─────────────────────────────────────────────────
-_saved           = load_data()
-ACCOUNTS         = _saved.get('accounts', [])
-cache            = {}
-view_history     = _saved.get('view_history', {})
-cta_config       = _saved.get('cta_config', {})
-cta_status       = _saved.get('cta_status', {})
-commented_albums = _saved.get('commented_albums', {})
-scan_status      = {'running': False, 'progress': '', 'started': '', 'finished': ''}
-print(f'[INIT] Carregado: {ACCOUNTS} | CTAs: {list(cta_config.keys())}')
+_saved          = load_data()
+ACCOUNTS        = _saved['accounts']
+cta_config      = _saved['cta_config']
+cta_status      = _saved['cta_status']
+commented       = _saved['commented']
+snapshots       = _saved['snapshots']
+hourly_snaps    = _saved['hourly_snaps']
+viral_streak    = _saved['viral_streak']
+deleted         = _saved['deleted']
+daily_history   = _saved['daily_history']
+cta_hourly_agg  = _saved['cta_hourly_agg']
+
+# Estado só de runtime (não precisa persistir — recalculado na hora)
+account_runtime = {}   # {username: {'state': 'ok'|'loading'|'error', 'message': str}}
+scan_status     = {'running': False, 'progress': '', 'pct': 0, 'account': None, 'finished': ''}
+
+print(f'[INIT] {len(ACCOUNTS)} conta(s): {ACCOUNTS} | armazenamento: {DATA_FILE}')
+if not os.path.exists(DATA_DIR):
+    print(f'[INIT] ⚠️  {DATA_DIR} não existe ainda — sem Volume configurado, os dados vão se perder no próximo restart!')
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -80,7 +157,29 @@ HEADERS = {
     'Accept-Language': 'pt-BR,pt;q=0.9',
 }
 
-# ── SCRAPING ─────────────────────────────────────────────────────
+# ================================================================
+# HELPERS DE TEMPO / NÚMERO
+# ================================================================
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+def iso_ts(iso_str):
+    """ISO string -> timestamp (segundos). Robusto a string vazia/inválida."""
+    if not iso_str:
+        return 0
+    try:
+        return datetime.fromisoformat(iso_str).timestamp()
+    except Exception:
+        return 0
+
+def hour_of(ts):
+    """Hora do dia (0-23) no horário de Rafael (America/Sao_Paulo), a partir de um timestamp unix."""
+    return datetime.fromtimestamp(ts, TZ).hour
+
+def today_key():
+    """Chave de 'hoje' no fuso de Rafael, no formato dd/mm (igual ao toLocaleDateString pt-BR usado no script)."""
+    return datetime.now(TZ).strftime('%d/%m')
+
 def parse_num(raw):
     if not raw:
         return 0
@@ -89,790 +188,1111 @@ def parse_num(raw):
     if not m:
         return 0
     n = m.group(1).replace(',', '.')
-    v = float(n)
+    try:
+        v = float(n)
+    except ValueError:
+        return 0
     s = m.group(2).upper()
-    if s == 'K': return int(v * 1_000)
-    if s == 'M': return int(v * 1_000_000)
-    if s == 'B': return int(v * 1_000_000_000)
-    return int(v)
+    if s == 'K': return int(round(v * 1_000))
+    if s == 'M': return int(round(v * 1_000_000))
+    if s == 'B': return int(round(v * 1_000_000_000))
+    return int(round(v))
+
+# ================================================================
+# SCRAPING (com retries — mesma resiliência que foi adicionada no userscript)
+# ================================================================
+def fetch_with_retries(url, label, attempts=3):
+    last_err = None
+    for attempt in range(1, attempts + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=15)
+            if r.status_code == 429:
+                wait = 60 * (2 ** (attempt - 1))
+                print(f'[429] {label} — aguardando {wait}s (tentativa {attempt}/{attempts})...')
+                time.sleep(wait)
+                continue
+            r.raise_for_status()
+            return r
+        except Exception as e:
+            last_err = e
+            print(f'[FETCH] Falha em {label} (tentativa {attempt}/{attempts}): {e}')
+            if attempt < attempts:
+                time.sleep(3 * attempt)
+    raise last_err or Exception('falha desconhecida')
+
+def _parse_album_card(el):
+    if el.select_one('.album-user'):  # repost — ignora, igual ao userscript
+        return None
+    link  = el.select_one('a.album-link')
+    href  = link['href'] if link else None
+    img   = el.select_one('img.album-thumbnail')
+    alt   = img.get('alt', '') if img else ''
+    title = re.sub(r'#\S+$', '', alt).strip() or 'Sem título'
+    vspan = el.select_one('span.album-bottom-views')
+    vraw  = re.sub(r'[^\d.,KMBkmb]', '', vspan.get_text()) if vspan else ''
+    views = parse_num(vraw)
+    aid   = el.get('id', '').replace('album-', '')
+    if href:
+        m = re.search(r'/a/([a-zA-Z0-9]+)', href)
+        if m:
+            aid = m.group(1)
+    if not aid:
+        return None
+    return {'id': aid, 'title': title, 'href': href, 'views': views}
 
 def scrape_profile(username):
     try:
-        url = f'https://www.erome.com/{username}?t=posts'
-        r   = requests.get(url, headers=HEADERS, timeout=15)
-        # Se 429, backoff exponencial: 1min, 2min, 4min (max 3 tentativas)
-        retries = 0
-        while r.status_code == 429 and retries < 3:
-            wait = 60 * (2 ** retries)
-            print(f'[429] Tentativa {retries+1}/3 — aguardando {wait}s...')
-            time.sleep(wait)
-            r = requests.get(url, headers=HEADERS, timeout=15)
-            retries += 1
-        if r.status_code == 429:
-            print(f'[429] Erome bloqueando — usando cache existente')
-            return cache.get(username) or {'error': '429', 'username': username, 'fetchedAt': datetime.now(timezone.utc).isoformat()}
-        r.raise_for_status()
+        r = fetch_with_retries(f'https://www.erome.com/{username}?t=posts', f'página 1 de @{username}')
         soup = BeautifulSoup(r.text, 'html.parser')
 
-        # Stats do perfil
-        total_views = 0
-        followers   = 0
-        album_count = 0
-
+        total_views, followers, album_count = 0, 0, 0
         ui = soup.select_one('.user-info')
         if ui:
             for span in ui.select(':scope > span'):
-                txt = span.get_text()
-                # Pega o texto do primeiro text node
+                txt   = span.get_text()
                 nodes = [c for c in span.children if isinstance(c, str) and c.strip()]
-                raw   = nodes[0].strip() if nodes else txt.split()[0]
+                raw   = nodes[0].strip() if nodes else (txt.split()[0] if txt.split() else '')
                 num   = parse_num(raw)
-                if 'ALBUM' in txt.upper():  album_count  = num
-                if 'VIEW'  in txt.upper():  total_views  = num
-                if 'FOLLOW' in txt.upper(): followers    = num
+                up    = txt.upper()
+                if 'ALBUM'  in up: album_count = num
+                if 'VIEW'   in up: total_views = num
+                if 'FOLLOW' in up: followers   = num
 
-        # Avatar
-        avatar = None
         av_el  = soup.select_one('img.avatar, .avatar img')
-        if av_el:
-            avatar = av_el.get('src')
+        avatar = av_el.get('src') if av_el else None
 
-        # Álbuns da página 1
         albums = []
         for el in soup.select('div.album[id^="album-"]'):
-            # Ignora reposts
-            if el.select_one('.album-user'):
-                continue
-            link  = el.select_one('a.album-link')
-            href  = link['href'] if link else None
-            alt   = ''
-            img   = el.select_one('img.album-thumbnail')
-            if img:
-                alt = img.get('alt', '')
-            title = re.sub(r'#\S+$', '', alt).strip() or 'Sem título'
-            vraw  = ''
-            vspan = el.select_one('span.album-bottom-views')
-            if vspan:
-                vraw = re.sub(r'[^\d.,KMBkmb]', '', vspan.get_text())
-            views = parse_num(vraw)
-            aid   = el.get('id', '').replace('album-', '')
-            if href:
-                m2 = re.search(r'/a/([a-zA-Z0-9]+)', href)
-                if m2:
-                    aid = m2.group(1)
-            if aid:
-                albums.append({'id': aid, 'title': title, 'href': href, 'views': views})
+            a = _parse_album_card(el)
+            if a:
+                albums.append(a)
 
-        # Page 1 done — now paginate to get ALL albums
+        has_next = bool(soup.select_one('a[rel="next"]') or soup.select('.pagination .page-item:not(.active) a[href*="page="]'))
         page = 2
-        while True:
-            try:
-                r2   = requests.get(f'https://www.erome.com/{username}?t=posts&page={page}', headers=HEADERS, timeout=10)
-                s2   = BeautifulSoup(r2.text, 'html.parser')
-                more = []
-                for el in s2.select('div.album[id^="album-"]'):
-                    if el.select_one('.album-user'):
-                        continue
-                    link  = el.select_one('a.album-link')
-                    href2 = link['href'] if link else None
-                    alt2  = ''
-                    img2  = el.select_one('img.album-thumbnail')
-                    if img2: alt2 = img2.get('alt', '')
-                    title2 = re.sub(r'#\S+$', '', alt2).strip() or 'Sem título'
-                    vraw2  = ''
-                    vspan2 = el.select_one('span.album-bottom-views')
-                    if vspan2: vraw2 = re.sub(r'[^\d.,KMBkmb]', '', vspan2.get_text())
-                    views2 = parse_num(vraw2)
-                    aid2   = el.get('id', '').replace('album-', '')
-                    if href2:
-                        m3 = re.search(r'/a/([a-zA-Z0-9]+)', href2)
-                        if m3: aid2 = m3.group(1)
-                    if aid2:
-                        albums.append({'id': aid2, 'title': title2, 'href': href2, 'views': views2})
-                        more.append(aid2)
-                # Check if there's a next page
-                has_next = bool(s2.select_one('a[rel="next"]') or s2.select('.pagination .page-item:not(.active) a[href*="page="]'))
-                if not has_next or not more:
-                    break
-                page += 1
-                time.sleep(0.5)
-            except:
+        while has_next:
+            r2 = fetch_with_retries(f'https://www.erome.com/{username}?t=posts&page={page}', f'página {page} de @{username}')
+            s2 = BeautifulSoup(r2.text, 'html.parser')
+            new_ones = []
+            for el in s2.select('div.album[id^="album-"]'):
+                a = _parse_album_card(el)
+                if a:
+                    albums.append(a)
+                    new_ones.append(a)
+            has_next = bool(s2.select_one('a[rel="next"]') or s2.select('.pagination .page-item:not(.active) a[href*="page="]'))
+            if not has_next or not new_ones:
                 break
+            page += 1
+            time.sleep(0.6)
 
         return {
-            'username':    username,
-            'avatar':      avatar,
-            'totalViews':  total_views,
-            'followers':   followers,
-            'albumCount':  len(albums),
-            'albums':      albums,
-            'fetchedAt':   datetime.now(timezone.utc).isoformat(),
-            'error':       None,
+            'username':   username,
+            'avatar':     avatar,
+            'totalViews': total_views,
+            'followers':  followers,
+            'albumCount': len(albums),
+            'albums':     albums,
+            'fetchedAt':  now_iso(),
+            'error':      None,
         }
-
     except Exception as ex:
-        return {'username': username, 'error': str(ex), 'fetchedAt': datetime.now(timezone.utc).isoformat()}
+        return {'username': username, 'error': str(ex), 'fetchedAt': now_iso(), 'albums': []}
 
+# ================================================================
+# SNAPSHOTS (histórico de 15-20min, base de tudo)
+# ================================================================
+def push_snapshot(u, data):
+    lst = snapshots.setdefault(u, [])
+    lst.insert(0, data)
+    if len(lst) > 96:
+        del lst[96:]
 
-def check_ctas_for(username):
-    """Verifica CTAs nos comentários dos álbuns comentados (como visitante deslogado)"""
-    ctas    = cta_config.get(username, [])
-    albums  = (cache.get(username) or {}).get('albums', [])
-    results = {}
+def last_saved_snapshot(u):
+    """O snapshot que estava em [0] ANTES do push desta rodada — usar pra diff/deleted DURANTE o refresh."""
+    lst = snapshots.get(u, [])
+    return lst[0] if lst else None
 
-    if not ctas or not albums:
-        return results
+def prev_snapshot(u):
+    """Usar DEPOIS que o snapshot novo já foi empurrado — [0] é o atual, [1] é 1 ciclo atrás."""
+    lst = snapshots.get(u, [])
+    return lst[1] if len(lst) > 1 else None
 
-    for album in albums:  # verifica TODOS
-        href = album.get('href')
-        aid  = album.get('id')
-        if not href or not aid:
+def current_snapshot(u):
+    lst = snapshots.get(u, [])
+    return lst[0] if lst else None
+
+def snap_of_24h(u):
+    lst = snapshots.get(u, [])
+    if len(lst) < 2:
+        return None
+    now = time.time()
+    best, best_diff = None, float('inf')
+    for snap in lst:
+        diff = abs(now - iso_ts(snap['fetchedAt']) - 86400)
+        if diff < best_diff:
+            best_diff, best = diff, snap
+    return best if best_diff < 2 * 3600 else None
+
+def detect_deleted(u, curr, prev):
+    if not prev or not prev.get('albums'):
+        return
+    ids  = {a['id'] for a in curr.get('albums', [])}
+    gone = [a for a in prev['albums'] if a['id'] not in ids]
+    if not gone:
+        return
+    log      = deleted.setdefault(u, [])
+    existing = {d['id'] for d in log}
+    comm     = commented.get(u, {})
+    for a in gone:
+        if a['id'] in existing:
+            continue
+        had_cta = a['id'] in comm
+        log.insert(0, {'id': a['id'], 'title': a['title'], 'views': a['views'], 'at': now_iso(), 'hadCta': had_cta})
+        if had_cta:
+            print(f'[DELETED] Vídeo com CTA deletado em @{u}: {a["title"][:50]}')
+    if len(log) > 500:
+        del log[500:]
+
+# ================================================================
+# VIEWS HOJE / TIMELINE POR HORA / HISTÓRICO DIÁRIO
+# ================================================================
+def get_views_today(u):
+    curr   = current_snapshot(u)
+    snap24 = snap_of_24h(u)
+    if not curr or not snap24:
+        return None
+    return max(0, curr['totalViews'] - snap24['totalViews'])
+
+def _timeline_from_snapshots(snap_list, id_filter=None):
+    """Núcleo compartilhado por get_views_timeline e get_commented_views_timeline."""
+    if len(snap_list) < 2:
+        return []
+    now    = time.time()
+    cutoff = now - 86400
+    recent = sorted([s for s in snap_list if iso_ts(s['fetchedAt']) > cutoff], key=lambda s: iso_ts(s['fetchedAt']))
+    if len(recent) < 2:
+        return []
+
+    raw_points = []
+    for i in range(1, len(recent)):
+        prev_s, cur_s = recent[i - 1], recent[i]
+        prev_map = {a['id']: a['views'] for a in prev_s.get('albums', [])}
+        delta = 0
+        for a in cur_s.get('albums', []):
+            if id_filter is not None and a['id'] not in id_filter:
+                continue
+            pv = prev_map.get(a['id'], 0)  # post novo (sem baseline) = todas as views contam como "ganhas" no período
+            if a['views'] > pv:
+                delta += a['views'] - pv
+        if delta <= 0:
+            continue
+        t_prev     = iso_ts(prev_s['fetchedAt'])
+        t_cur      = iso_ts(cur_s['fetchedAt'])
+        span_hours = max(1, round(max(t_cur - t_prev, 60) / 3600))
+        per_hour   = delta / span_hours
+        for h in range(span_hours):
+            raw_points.append((hour_of(t_cur - h * 3600), per_hour))
+
+    by_hour = {}
+    for hod, v in raw_points:
+        by_hour[hod] = by_hour.get(hod, 0) + v
+
+    points = []
+    current_hour = hour_of(now)
+    for i in range(23, -1, -1):
+        h = (current_hour - i + 24) % 24
+        points.append({'label': f'{h:02d}h', 'hour': h, 'views': round(by_hour.get(h, 0))})
+    return points
+
+def get_views_timeline(u):
+    return _timeline_from_snapshots(snapshots.get(u, []))
+
+def get_commented_views_timeline(u):
+    ids = set((commented.get(u) or {}).keys())
+    if not ids:
+        return []
+    return _timeline_from_snapshots(snapshots.get(u, []), id_filter=ids)
+
+def get_views_gained_24h_for_ids(u, id_set):
+    lst = snapshots.get(u, [])
+    if len(lst) < 2 or not id_set:
+        return 0
+    cutoff = time.time() - 86400
+    recent = sorted([s for s in lst if iso_ts(s['fetchedAt']) > cutoff], key=lambda s: iso_ts(s['fetchedAt']))
+    if len(recent) < 2:
+        return 0
+    total = 0
+    for i in range(1, len(recent)):
+        prev_map = {a['id']: a['views'] for a in recent[i - 1].get('albums', [])}
+        for a in recent[i].get('albums', []):
+            if a['id'] not in id_set:
+                continue
+            pv = prev_map.get(a['id'], 0)
+            if a['views'] > pv:
+                total += a['views'] - pv
+    return total
+
+def get_top_cta_hours(u, top_n=3):
+    agg = cta_hourly_agg.get(u)
+    if not agg:
+        return []
+    entries = [{'hour': int(h), 'views': v} for h, v in agg.items()]
+    entries.sort(key=lambda e: -e['views'])
+    return entries[:top_n]
+
+def check_daily_reset(u):
+    curr = current_snapshot(u)
+    if not curr:
+        return
+    snap24 = snap_of_24h(u)
+    if not snap24:
+        return
+    snap_age = time.time() - iso_ts(snap24['fetchedAt'])
+    if snap_age < 23 * 3600:
+        return
+
+    key  = today_key()
+    hist = daily_history.setdefault(u, [])
+    if any(d['date'] == key for d in hist):
+        return
+
+    views_gained = max(0, curr['totalViews'] - snap24['totalViews'])
+    hist.insert(0, {'date': key, 'views': views_gained, 'savedAt': now_iso()})
+    if len(hist) > 30:
+        del hist[30:]
+
+    cta_tl = get_commented_views_timeline(u)
+    if cta_tl:
+        agg = cta_hourly_agg.setdefault(u, {})
+        for t in cta_tl:
+            if t['views'] > 0:
+                key_h = str(t['hour'])
+                agg[key_h] = agg.get(key_h, 0) + t['views']
+
+# ================================================================
+# SISTEMA VIRAL — janelas horárias (idêntico ao userscript)
+# ================================================================
+def save_hourly_snap(u):
+    m = current_snapshot(u)
+    if not m:
+        return
+    lst = hourly_snaps.setdefault(u, [])
+    lst.insert(0, {
+        'at': now_iso(),
+        'albums': [{'id': a['id'], 'views': a['views'], 'title': a['title'], 'href': a['href']} for a in m.get('albums', [])],
+        'totalViews': m.get('totalViews', 0),
+    })
+    if len(lst) > 48:
+        del lst[48:]
+
+def get_hourly_snap_of(u, hours_ago):
+    hs = hourly_snaps.get(u, [])
+    if not hs:
+        return None
+    target = time.time() - hours_ago * 3600
+    best, best_diff = None, float('inf')
+    for s in hs:
+        diff = abs(iso_ts(s['at']) - target)
+        if diff < best_diff:
+            best_diff, best = diff, s
+    return best if best_diff < 1800 else None
+
+def get_snap_hours_ago(u, hours_ago):
+    lst = snapshots.get(u, [])
+    if len(lst) < 2:
+        return None
+    target = time.time() - hours_ago * 3600
+    best, best_diff = None, float('inf')
+    for s in lst:
+        diff = abs(iso_ts(s['fetchedAt']) - target)
+        if diff < best_diff:
+            best_diff, best = diff, s
+    return best if best_diff < 20 * 60 else None
+
+def get_album_hourly_peak(u, album_id, hours_window=24):
+    hs = hourly_snaps.get(u, [])
+    if len(hs) < 2:
+        return None
+    cutoff = time.time() - hours_window * 3600
+    recent = sorted([s for s in hs if iso_ts(s['at']) > cutoff], key=lambda s: iso_ts(s['at']))
+    if len(recent) < 2:
+        return None
+    peak = 0
+    for i in range(1, len(recent)):
+        prev_map = {a['id']: a['views'] for a in recent[i - 1].get('albums', [])}
+        cur_alb  = next((a for a in recent[i].get('albums', []) if a['id'] == album_id), None)
+        if not cur_alb:
+            continue
+        pv    = prev_map.get(album_id, cur_alb['views'])
+        delta = max(0, cur_alb['views'] - pv)
+        peak  = max(peak, delta)
+    return peak
+
+def get_viral(u):
+    m = current_snapshot(u)
+    if not m:
+        return []
+    prev1h = get_hourly_snap_of(u, 1)
+    prev   = prev1h or prev_snapshot(u)
+    if not prev:
+        return []
+    pm        = {a['id']: a['views'] for a in prev.get('albums', [])}
+    is_hourly = prev1h is not None
+
+    all_albums = []
+    for a in m.get('albums', []):
+        if a['id'] not in pm:
+            continue  # post sem baseline real (recém publicado) — não entra na análise
+        delta = max(0, a['views'] - pm[a['id']])
+        if delta <= 0:
+            continue
+        all_albums.append({**a, 'delta': delta, 'isHourly': is_hourly})
+
+    if not all_albums:
+        return []
+    avg      = sum(a['delta'] for a in all_albums) / len(all_albums)
+    variance = sum((a['delta'] - avg) ** 2 for a in all_albums) / len(all_albums)
+    std_dev  = variance ** 0.5
+    threshold = avg + std_dev
+    for a in all_albums:
+        a['ratio']     = (a['delta'] / avg) if avg > 0 else 1
+        a['standout']  = a['delta'] > threshold
+        a['avg']       = avg
+        a['threshold'] = threshold
+    all_albums.sort(key=lambda a: -a['delta'])
+    return all_albums
+
+def get_standout(u):
+    return [a for a in get_viral(u) if a['standout']]
+
+def update_viral_streak(u, standouts):
+    streak = viral_streak.setdefault(u, {})
+    ids = {a['id'] for a in standouts}
+    for a in standouts:
+        streak[a['id']] = streak.get(a['id'], 0) + 1
+    for aid in list(streak.keys()):
+        if aid not in ids:
+            streak[aid] = max(0, streak.get(aid, 0) - 1)
+
+def get_confirmed_viral(u):
+    hs       = hourly_snaps.get(u, [])
+    streak   = viral_streak.get(u, {})
+    standout = get_standout(u)
+    if not standout:
+        return []
+    if len(hs) < 3:
+        return [a for a in standout if streak.get(a['id'], 0) >= 3]
+    snap2h    = get_hourly_snap_of(u, 2) or hs[min(2, len(hs) - 1)]
+    existed2h = {a['id'] for a in (snap2h or {}).get('albums', [])}
+    result = []
+    for a in standout:
+        if streak.get(a['id'], 0) < 2:
+            continue
+        if a['id'] not in existed2h:
+            continue
+        result.append(a)
+    return result
+
+# ================================================================
+# POSTS NOVOS / DIAS SEM POSTAR
+# ================================================================
+def get_days_since_post(u):
+    lst = snapshots.get(u, [])
+    if len(lst) < 2 or not lst[0].get('albums'):
+        return None
+    current_ids = {a['id'] for a in lst[0]['albums']}
+    for i in range(1, len(lst)):
+        ids_at_i = {a['id'] for a in lst[i].get('albums', [])}
+        if any(aid not in ids_at_i for aid in current_ids):
+            post_ts = iso_ts(lst[i - 1]['fetchedAt'])
+            diff_h  = (time.time() - post_ts) / 3600
+            if diff_h < 24:
+                return 0
+            return int(diff_h // 24)
+    oldest = lst[-1]
+    diff_h = (time.time() - iso_ts(oldest['fetchedAt'])) / 3600
+    if diff_h < 24:
+        return 0
+    return int(diff_h // 24)
+
+def get_new_posts_count(curr, prev):
+    if not prev or not prev.get('albums'):
+        return 0
+    prev_ids = {a['id'] for a in prev['albums']}
+    return sum(1 for a in curr.get('albums', []) if a['id'] not in prev_ids)
+
+def get_post_message(new_posts, days_sem):
+    if new_posts > 0:
+        if new_posts >= 10: return {'emoji': '🚀', 'msg': f'MONSTRO! {new_posts} posts hoje! A Porsche já tá no showroom esperando!'}
+        if new_posts >= 6:  return {'emoji': '🔥', 'msg': f'Focado demais! {new_posts} álbuns novos hoje! Assim vai longe!'}
+        if new_posts >= 3:  return {'emoji': '💪', 'msg': f'{new_posts} posts hoje! Tá no ritmo certo, continua assim!'}
+        if new_posts == 2: return {'emoji': '👍', 'msg': '2 posts hoje! Bom começo, mas dá pra mais né?'}
+        if new_posts == 1: return {'emoji': '😴', 'msg': 'Preguiça né? A Porsche vai demorar a vir com 1 postinho só kk'}
+    if days_sem is None or days_sem == 0:
+        return None
+    if days_sem == 1: return {'emoji': '⚠️', 'msg': 'Psiu... já faz 1 dia sem postar. O algoritmo esquece rápido!'}
+    if days_sem == 2: return {'emoji': '😬', 'msg': '2 dias sem postar! Seus seguidores estão com saudade...'}
+    if days_sem == 3: return {'emoji': '🚨', 'msg': '3 dias! Cara, o algoritmo já te esqueceu. Volta pro trabalho!'}
+    if days_sem >= 7: return {'emoji': '💀', 'msg': f'{days_sem} dias sem postar?! A Porsche foi embora... corre!'}
+    return {'emoji': '⏰', 'msg': f'{days_sem} dias sem postar. Hora de voltar à ação!'}
+
+# ================================================================
+# CTAs NOS COMENTÁRIOS
+# ================================================================
+def fetch_album_comments(href):
+    r = requests.get(href, headers=HEADERS, timeout=15)
+    r.raise_for_status()
+    return BeautifulSoup(r.text, 'html.parser')
+
+def _comment_text(soup):
+    parts = []
+    for sel in ['span.comment-text', '.comment-text', '.comment-content', '.list-comment', 'div.comment']:
+        parts += [el.get_text() for el in soup.select(sel)]
+    comm_div = soup.select_one('.comments, #comments, [class*="comment"]')
+    if comm_div:
+        parts.append(comm_div.get_text())
+    return ' '.join(parts).lower()
+
+def check_ctas_for(u):
+    """Verifica CTA só dos álbuns marcados como 'comentados' — igual ao checkCTAs() do userscript.
+    (Antes verificava TODOS os álbuns da conta a cada 10min — bem mais pesado e sem sentido,
+    já que só os marcados como comentados têm CTA seu pra checar.)"""
+    ctas = cta_config.get(u, [])
+    comm = commented.get(u, {})
+    if not ctas or not comm:
+        return
+    st = cta_status.setdefault(u, {})
+    for album_id, c in list(comm.items()):
+        href = c.get('href')
+        if not href:
             continue
         try:
-            r    = requests.get(href, headers=HEADERS, timeout=10)
-            soup = BeautifulSoup(r.text, 'html.parser')
-            # Múltiplos seletores — igual ao Tampermonkey
-            # Baseado no HTML do Erome: div.comment > div.comment-content > span.comment-text
-            selectors = [
-                'span.comment-text',
-                '.comment-text',
-                '.comment-content',
-                '.list-comment',
-                'div.comment',
-                '#comments',
-            ]
-            parts = []
-            for sel in selectors:
-                parts += [el.get_text() for el in soup.select(sel)]
-            # Fallback: texto completo da seção de comentários
-            comm_div = soup.select_one('.comments, #comments, [class*="comment"]')
-            if comm_div:
-                parts.append(comm_div.get_text())
-            comm_text = ' '.join(parts).lower()
-            found = next((ct for ct in ctas if ct.lower() in comm_text), None)
-            prev  = results.get(aid, {})
-            results[aid] = {
-                'ok':        bool(found),
-                'foundCta':  found,
-                'checkedAt': datetime.now(timezone.utc).isoformat(),
-            }
-            # Só registra "sumiu" se antes estava OK
-            if prev.get('ok') and not bool(found):
-                print(f'[CTA] SUMIU em {aid} (@{username})')
+            soup      = fetch_album_comments(href)
+            comm_text = _comment_text(soup)
+            found     = next((ct for ct in ctas if ct.lower() in comm_text), None)
+            prev      = st.get(album_id)
+            st[album_id] = {'ok': bool(found), 'foundCta': found, 'checkedAt': now_iso()}
+            if found:
+                c['lastCta'] = found
+            if prev and prev.get('ok') and not found:
+                print(f'[CTA] SUMIU em @{u} — {c.get("title","")[:50]}')
             time.sleep(0.6)
         except Exception as ex:
-            print(f'[CTA] Erro album {aid}: {ex}')
+            print(f'[CTA] Erro @{u}/{album_id}: {ex}')
 
-    cta_status[username] = results
-    return results
+# ================================================================
+# COMENTADOS — marcar/desmarcar
+# ================================================================
+def mark_commented(u, album_id, title, href, views):
+    comm = commented.setdefault(u, {})
+    existing = comm.get(album_id, {})
+    comm[album_id] = {
+        'at': existing.get('at', now_iso()),
+        'title': title or existing.get('title', ''),
+        'href': href or existing.get('href', ''),
+        'baselineViews': existing.get('baselineViews', views),
+        'autoDetected': existing.get('autoDetected', False),
+        'lastCta': existing.get('lastCta'),
+    }
 
+def unmark_commented(u, album_id):
+    if u in commented and album_id in commented[u]:
+        del commented[u][album_id]
+    if u in cta_status and album_id in cta_status[u]:
+        del cta_status[u][album_id]
+
+# ================================================================
+# SCANNER DE CTAs — varre álbuns SEM CTA ainda confirmado (igual à v3.24 do userscript)
+# ================================================================
+def scan_all_albums(u):
+    global scan_status
+    if scan_status.get('running'):
+        return
+    ctas = cta_config.get(u, [])
+    if not ctas:
+        scan_status = {'running': False, 'progress': 'Cadastre CTAs antes de escanear.', 'pct': 0, 'account': u, 'finished': now_iso()}
+        return
+
+    m = current_snapshot(u)
+    if not m or not m.get('albums'):
+        scan_status = {'running': False, 'progress': 'Sem álbuns carregados ainda — atualize a conta primeiro.', 'pct': 0, 'account': u, 'finished': now_iso()}
+        return
+
+    comm  = commented.setdefault(u, {})
+    queue = [a for a in m['albums'] if a.get('href') and a['id'] not in comm]
+    skipped = len(m['albums']) - len(queue)
+    total   = len(queue)
+
+    if total == 0:
+        scan_status = {'running': False, 'progress': f'Nada novo pra escanear — {skipped} álbuns já marcados continuam monitorados.', 'pct': 100, 'account': u, 'finished': now_iso()}
+        return
+
+    scan_status = {'running': True, 'progress': f'Escaneando 0/{total} álbuns novos...', 'pct': 0, 'account': u, 'finished': ''}
+    checked, found, new_found = 0, 0, 0
+
+    for album in queue:
+        try:
+            soup      = fetch_album_comments(album['href'])
+            comm_text = _comment_text(soup)
+            found_cta = next((ct for ct in ctas if ct.lower() in comm_text), None)
+            if found_cta:
+                found += 1
+                is_new = album['id'] not in comm
+                comm[album['id']] = {
+                    'at': now_iso(), 'title': album['title'], 'href': album['href'],
+                    'baselineViews': album.get('views'), 'autoDetected': True, 'lastCta': found_cta,
+                }
+                if is_new:
+                    new_found += 1
+        except Exception as ex:
+            print(f'[SCAN] Erro {album.get("href")}: {ex}')
+        checked += 1
+        scan_status['pct']      = int((checked / total) * 100)
+        scan_status['progress'] = f'Escaneando {checked}/{total} álbuns — {found} CTAs encontrados'
+        time.sleep(0.6)
+
+    save_data()
+    scan_status = {
+        'running': False, 'pct': 100, 'account': u, 'finished': now_iso(),
+        'progress': f'Concluído! {found} CTAs encontrados ({new_found} novos) em {total} álbuns verificados.'
+                    + (f' ({skipped} já marcados foram pulados)' if skipped else ''),
+    }
+
+# ================================================================
+# REFRESH — dados da conta
+# ================================================================
+_refreshing = set()
+
+def refresh_account(u):
+    if u in _refreshing:
+        return
+    _refreshing.add(u)
+    account_runtime[u] = {'state': 'loading', 'message': ''}
+    try:
+        data = scrape_profile(u)
+        if data.get('error'):
+            account_runtime[u] = {'state': 'error', 'message': data['error']}
+            print(f'[REFRESH] Erro @{u}: {data["error"]}')
+            return
+
+        with _state_lock:
+            prev = last_saved_snapshot(u)
+            detect_deleted(u, data, prev)
+            push_snapshot(u, data)
+            check_daily_reset(u)
+
+        new_posts = get_new_posts_count(data, prev)
+        days_sem  = get_days_since_post(u)
+        post_msg  = get_post_message(new_posts, days_sem)
+        if post_msg:
+            print(f'[{u}] {post_msg["emoji"]} {post_msg["msg"]}')
+        if prev and prev.get('albumCount', 0) > data['albumCount']:
+            print(f'[{u}] ⚠️ {prev["albumCount"] - data["albumCount"]} álbum(ns) removido(s)')
+
+        check_ctas_for(u)
+        account_runtime[u] = {'state': 'ok', 'message': ''}
+        save_data()
+    finally:
+        _refreshing.discard(u)
 
 def refresh_all():
-    """Atualiza cache de todas as contas"""
-    for u in ACCOUNTS:
-        data = scrape_profile(u)
-        if data and not data.get('error'):
-            cache[u] = data
-        elif not cache.get(u):
-            cache[u] = data  # guarda mesmo com erro se nao tem cache
-        # Salva histórico de views para calcular views de hoje
-        if data and not data.get('error') and data.get('totalViews'):
-            if u not in view_history:
-                view_history[u] = []
-            view_history[u].append({'ts': time.time(), 'views': data['totalViews']})
-            # Mantém só 48h de histórico
-            cutoff = time.time() - 172800
-            view_history[u] = [x for x in view_history[u] if x['ts'] > cutoff]
-            # Persiste histórico a cada update
-            save_data()
-        print(f'[{datetime.now().strftime("%H:%M")}] Atualizado: {u} — {data.get("totalViews","?")} views')
+    for u in list(ACCOUNTS):
+        refresh_account(u)
         time.sleep(1)
 
+def viral_refresh_all():
+    for u in list(ACCOUNTS):
+        if not current_snapshot(u):
+            continue
+        with _state_lock:
+            save_hourly_snap(u)
+            standout = get_standout(u)
+            update_viral_streak(u, standout)
+        time.sleep(0.5)
+    save_data()
+    print(f'[VIRAL] refresh horário ✓ {datetime.now(TZ).strftime("%H:%M")}')
 
 def cta_refresh_all():
-    """Verifica CTAs de todas as contas (a cada 10 min)"""
-    for u in ACCOUNTS:
-        try:
-            check_ctas_for(u)
-            print(f'[{datetime.now().strftime("%H:%M")}] CTAs ok: @{u} — {len(cta_status.get(u,{}))} albuns')
-        except Exception as ex:
-            print(f'[CTA] Erro em @{u}: {ex}')
+    for u in list(ACCOUNTS):
+        check_ctas_for(u)
         time.sleep(1)
+    save_data()
 
-
+# ================================================================
+# LOOP EM BACKGROUND — 3 timers, igual ao userscript (15-20min / 1h / 10min)
+# ================================================================
 def background_loop():
-    """Loop em background — atualiza dados a cada 15min e CTAs a cada 10min"""
-    last_data = 0
-    last_cta  = 0
+    last_data, last_cta, last_viral = 0, 0, 0
+    DATA_INTERVAL  = 20 * 60   # 20min (margem de segurança contra bloqueio do Erome)
+    CTA_INTERVAL   = 10 * 60
+    VIRAL_INTERVAL = 60 * 60
     while True:
         now = time.time()
-        if now - last_data >= 20 * 60:  # 20min para evitar bloqueio
-            refresh_all()
-            last_data = now
-        if now - last_cta >= 10 * 60:
-            cta_refresh_all()
-            last_cta = now
+        try:
+            if now - last_data >= DATA_INTERVAL:
+                refresh_all()
+                last_data = now
+            if now - last_cta >= CTA_INTERVAL:
+                cta_refresh_all()
+                last_cta = now
+            if now - last_viral >= VIRAL_INTERVAL:
+                viral_refresh_all()
+                last_viral = now
+        except Exception as ex:
+            print(f'[LOOP] Erro inesperado: {ex}')
         time.sleep(30)
 
+# ================================================================
+# PAYLOAD DO DASHBOARD — tudo que o /admin precisa, numa única chamada
+# ================================================================
+def build_dashboard_payload(u):
+    m = current_snapshot(u)
+    if not m:
+        rt = account_runtime.get(u, {})
+        return {'username': u, 'hasData': False, 'state': rt.get('state', 'none'), 'message': rt.get('message', '')}
 
-# ── ROTAS API ────────────────────────────────────────────────────
+    prev    = prev_snapshot(u)
+    comm    = commented.get(u, {})
+    cta_st  = cta_status.get(u, {})
+    cta_lst = cta_config.get(u, [])
+
+    def diff(key):
+        if not prev:
+            return None
+        return m.get(key, 0) - prev.get(key, m.get(key, 0))
+
+    timeline   = get_views_timeline(u)
+    gain1h_ov  = timeline[-1]['views'] if timeline else None
+    views_today = get_views_today(u)
+    days_sem   = get_days_since_post(u)
+    new_posts  = get_new_posts_count(m, prev)
+    post_msg   = get_post_message(new_posts, days_sem)
+
+    standout_all  = get_standout(u)
+    confirmed_all = get_confirmed_viral(u)
+    standout_pending  = [a for a in standout_all  if a['id'] not in comm]
+    confirmed_pending = [a for a in confirmed_all if a['id'] not in comm]
+
+    alerts = []
+    if prev and prev.get('albumCount', 0) > m['albumCount']:
+        alerts.append({'type': 'warn', 'icon': '⚠️',
+                        'text': f"{prev['albumCount'] - m['albumCount']} álbum(ns) removido(s). Veja a aba Deletados."})
+    if post_msg:
+        cls = 'ok' if new_posts > 0 else ('fire' if (days_sem or 0) >= 3 else 'warn')
+        alerts.append({'type': cls, 'icon': post_msg['emoji'], 'text': post_msg['msg']})
+
+    overview = {
+        'totalViews': m['totalViews'], 'followers': m['followers'], 'albumCount': m['albumCount'],
+        'followersDiff': diff('followers'), 'albumCountDiff': diff('albumCount'),
+        'gain1h': gain1h_ov, 'viewsToday': views_today, 'daysSem': days_sem, 'newPosts': new_posts,
+        'postMsg': post_msg, 'alerts': alerts, 'timeline': timeline,
+        'dailyHistory': daily_history.get(u, []),
+        'top8': sorted(m.get('albums', []), key=lambda a: -a['views'])[:8],
+        'toCommentCount': len(confirmed_pending) or len(standout_pending),
+        'toCommentLabel': 'confirmados' if confirmed_pending else ('em destaque' if standout_pending else 'normal'),
+        'fetchedAt': m['fetchedAt'], 'albumsRead': len(m.get('albums', [])), 'avatar': m.get('avatar'),
+    }
+
+    ranking = sorted(m.get('albums', []), key=lambda a: -a['views'])
+
+    streak        = viral_streak.get(u, {})
+    standout_ids  = {a['id'] for a in standout_all}
+    confirmed_ids = {a['id'] for a in confirmed_all}
+    viral_pending = [a for a in get_viral(u) if a['id'] not in comm]
+    viral_rows = [{
+        'rank': i + 1, 'id': a['id'], 'title': a['title'], 'href': a['href'],
+        'delta': a['delta'], 'views': a['views'], 'ratio': a['ratio'],
+        'standout': a['id'] in standout_ids, 'confirmed': a['id'] in confirmed_ids,
+        'streak': streak.get(a['id'], 0),
+    } for i, a in enumerate(viral_pending[:30])]
+    viral_tab = {'hasPrev': prev is not None, 'rows': viral_rows, 'toCommentCount': len(confirmed_pending)}
+
+    # ---- Comentados ----
+    entries      = sorted(comm.items(), key=lambda kv: -iso_ts(kv[1].get('at', '')))
+    albums_map   = {a['id']: a for a in m.get('albums', [])}
+    prev1h       = get_hourly_snap_of(u, 1) or get_snap_hours_ago(u, 1)
+    prev_map_1h  = {a['id']: a['views'] for a in (prev1h or {}).get('albums', [])}
+    prev_day     = get_hourly_snap_of(u, 24) or get_snap_hours_ago(u, 24)
+    prev_map_day = {a['id']: a['views'] for a in (prev_day or {}).get('albums', [])}
+    has_hourly   = prev1h is not None
+    has_daily    = prev_day is not None
+
+    deleted_count = sum(1 for aid, _ in entries if aid not in albums_map)
+    gone_count    = sum(1 for aid, _ in entries if cta_st.get(aid) and not cta_st[aid].get('ok'))
+
+    total_gain_1h, count_gain_1h = 0, 0
+    for aid, c in entries:
+        alb = albums_map.get(aid)
+        if not alb or not has_hourly:
+            continue
+        pv = prev_map_1h.get(aid, alb['views'])
+        total_gain_1h += max(0, alb['views'] - pv)
+        count_gain_1h += 1
+    avg_gain_1h = (total_gain_1h / count_gain_1h) if count_gain_1h else 0
+
+    cta_timeline   = get_commented_views_timeline(u)
+    gain24h_total  = sum(t['views'] for t in cta_timeline)
+    top_hours      = get_top_cta_hours(u, 3)
+
+    groups = {}
+    for aid, c in entries:
+        st_e  = cta_st.get(aid)
+        found = (st_e.get('foundCta') if (st_e and st_e.get('ok')) else None) or c.get('lastCta')
+        key   = found or '— sem CTA identificado'
+        g = groups.setdefault(key, {'ids': set(), 'count': 0})
+        g['ids'].add(aid); g['count'] += 1
+
+    cta_summary = []
+    for keyword, g in groups.items():
+        gain24_g = get_views_gained_24h_for_ids(u, g['ids'])
+        gain1_g  = 0
+        if has_hourly:
+            for aid in g['ids']:
+                alb = albums_map.get(aid)
+                if not alb:
+                    continue
+                pv = prev_map_1h.get(aid, alb['views'])
+                gain1_g += max(0, alb['views'] - pv)
+        cta_summary.append({'keyword': keyword, 'count': g['count'], 'gain1h': gain1_g, 'gain24h': gain24_g})
+    cta_summary.sort(key=lambda g: (g['keyword'].startswith('—'), -g['gain24h']))
+
+    rows = []
+    for aid, c in entries:
+        alb         = albums_map.get(aid)
+        is_deleted  = alb is None
+        st_e        = cta_st.get(aid)
+        cta_found   = (st_e.get('foundCta') if (st_e and st_e.get('ok')) else None) or c.get('lastCta')
+        cur_views   = alb['views'] if alb else None
+        gain1h_e = gain24h_e = temp_icon = None
+        if alb and has_hourly:
+            pv = prev_map_1h.get(aid, alb['views'])
+            gain1h_e = max(0, alb['views'] - pv)
+            peak = get_album_hourly_peak(u, aid)
+            above_avg = avg_gain_1h > 0 and gain1h_e >= avg_gain_1h
+            if peak is not None and peak >= 5:
+                ratio = (gain1h_e / peak) if peak else 0
+                if ratio >= 0.6 or above_avg:
+                    temp_icon = 'fire'
+                elif ratio < 0.3 and not above_avg:
+                    temp_icon = 'ice'
+        if alb and has_daily:
+            pvd = prev_map_day.get(aid, alb['views'])
+            gain24h_e = max(0, alb['views'] - pvd)
+        days = int((time.time() - iso_ts(c.get('at', ''))) // 86400) if c.get('at') else None
+        rows.append({
+            'id': aid, 'title': c.get('title', ''), 'href': c.get('href', ''),
+            'ctaFound': cta_found, 'isDeleted': is_deleted, 'curViews': cur_views,
+            'gain1h': gain1h_e, 'gain24h': gain24h_e, 'tempIcon': temp_icon,
+            'ctaOk': st_e.get('ok') if st_e else None, 'ctaChecked': bool(st_e), 'days': days,
+        })
+
+    checked_times = [v.get('checkedAt') for v in cta_st.values() if v.get('checkedAt')]
+    commented_tab = {
+        'rows': rows, 'goneCount': gone_count, 'deletedCount': deleted_count, 'hasHourly': has_hourly,
+        'totalGain1h': total_gain_1h, 'gain24hTotal': gain24h_total, 'ctaTimeline': cta_timeline,
+        'topHours': top_hours, 'ctaSummary': cta_summary,
+        'lastCheckedAt': max(checked_times) if checked_times else None,
+    }
+
+    # ---- Deletados ----
+    log = deleted.get(u, [])
+    deleted_tab = {
+        'log': log, 'lost': sum(d.get('views', 0) for d in log),
+        'ctaCount': sum(1 for d in log if d.get('hadCta')),
+        'lostCta': sum(d.get('views', 0) for d in log if d.get('hadCta')),
+    }
+
+    # ---- CTAs ----
+    gone_entries = []
+    for aid, st_e in cta_st.items():
+        if not st_e.get('ok') and aid in comm:
+            c = comm[aid]
+            gone_entries.append({'id': aid, 'title': c.get('title', ''), 'href': c.get('href', ''),
+                                  'checkedAt': st_e.get('checkedAt')})
+    ctas_tab = {'ctaList': cta_lst, 'goneEntries': gone_entries, 'hasChecks': bool(cta_st)}
+
+    return {
+        'username': u, 'hasData': True, 'state': account_runtime.get(u, {}).get('state', 'ok'),
+        'ctaList': cta_lst, 'overview': overview, 'ranking': ranking, 'viral': viral_tab,
+        'commented': commented_tab, 'deleted': deleted_tab, 'ctas': ctas_tab,
+    }
+
+# ================================================================
+# FRONT-END DO /admin — carregado de um arquivo separado (admin.html),
+# que precisa estar na MESMA PASTA que este app.py no seu repositório.
+# ================================================================
+_ADMIN_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'admin.html')
+try:
+    with open(_ADMIN_HTML_PATH, 'r', encoding='utf-8') as _f:
+        ADMIN_HTML = _f.read()
+except FileNotFoundError:
+    ADMIN_HTML = '<h1 style="color:#f44;font-family:sans-serif">admin.html não encontrado — coloque-o na mesma pasta do app.py</h1>'
+
+# ================================================================
+# ROTAS — API legada (compatível com o userscript Tampermonkey)
+# ================================================================
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'accounts': ACCOUNTS, 'ctas': cta_config})
 
-@app.route('/scan-page')
-def scan_page():
-    """Redireciona para admin - scan feito pelo Tampermonkey"""
-    from flask import redirect
-    if not scan_status.get('running'):
-        # Inicia o scan
-        scan_status['running']  = True
-        scan_status['started']  = datetime.now(timezone.utc).isoformat()
-        scan_status['progress'] = 'Iniciando...'
-        scan_status['pct']      = 0
-        scan_status['finished'] = ''
-
-        def do_scan():
-            for u in ACCOUNTS:
-                try:
-                    # Busca TODOS os albuns com paginacao completa
-                    scan_status['progress'] = f'Buscando todos os albuns de @{u}...'
-                    scan_status['pct']      = 2
-                    data = scrape_profile(u)  # ja tem paginacao completa
-                    if data and not data.get('error'):
-                        cache[u] = data
-                        print(f'[SCAN] {len(data.get("albums",[]))} albuns encontrados para @{u}')
-                    albs  = (cache.get(u) or {}).get('albums', [])
-                    total = len(albs)
-                    scan_status['progress'] = f'Verificando CTAs em {total} albuns de @{u}...'
-                    scan_status['progress'] = f'Verificando {total} albuns de @{u}...'
-
-                    ctas = cta_config.get(u, [])
-                    results = dict(cta_status.get(u, {}))
-                    found_count = 0
-
-                    for idx, album in enumerate(albs):
-                        href = album.get('href')
-                        aid  = album.get('id')
-                        if not href or not aid:
-                            continue
-                        pct = 5 + int((idx / total) * 90)
-                        scan_status['pct']      = pct
-                        scan_status['progress'] = f'Album {idx+1}/{total} — {found_count} CTAs encontrados'
-                        try:
-                            r    = requests.get(href, headers=HEADERS, timeout=10)
-                            soup = BeautifulSoup(r.text, 'html.parser')
-                            parts = []
-                            for sel in ['span.comment-text','.comment-text','.comment-content','.list-comment','div.comment']:
-                                parts += [el.get_text() for el in soup.select(sel)]
-                            comm_div = soup.select_one('.comments, #comments, [class*="comment"]')
-                            if comm_div:
-                                parts.append(comm_div.get_text())
-                            txt   = ' '.join(parts).lower()
-                            found = next((ct for ct in ctas if ct.lower() in txt), None)
-                            prev  = results.get(aid, {})
-                            if found:
-                                found_count += 1
-                                results[aid] = {'ok': True, 'foundCta': found, 'checkedAt': datetime.now(timezone.utc).isoformat()}
-                            elif prev.get('ok'):
-                                results[aid] = {'ok': False, 'foundCta': None, 'checkedAt': datetime.now(timezone.utc).isoformat()}
-                                print(f'[SCAN] CTA SUMIU: {album.get("title",aid)}')
-                            # Nao registra albuns sem historico e sem CTA
-                            time.sleep(0.6)
-                        except Exception as ex:
-                            print(f'[SCAN] Erro {aid}: {ex}')
-
-                    cta_status[u] = results
-                    save_data()  # persiste resultado
-                    scan_status['progress'] = f'Concluido! {found_count} CTAs encontrados em {total} albuns de @{u}'
-                    scan_status['pct']      = 100
-                except Exception as ex:
-                    scan_status['progress'] = f'Erro: {ex}'
-                    print(f'[SCAN] Erro geral: {ex}')
-
-            scan_status['running']  = False
-            scan_status['finished'] = datetime.now(timezone.utc).isoformat()
-
-        threading.Thread(target=do_scan, daemon=True).start()
-
-    return redirect('/admin')
-
-@app.route('/scan')
-def manual_scan():
-    """Força scan imediato de CTAs em todos os álbuns"""
-    from flask import redirect, request
-    scan_status['running'] = True
-    scan_status['started'] = datetime.now(timezone.utc).isoformat()
-    scan_status['progress'] = 'Iniciando...'
-
-    def do_scan():
-        for u in ACCOUNTS:
-            try:
-                # Atualiza albuns primeiro
-                scan_status['progress'] = f'Buscando albuns de @{u}...'
-                data = scrape_profile(u)
-                if data and not data.get('error'):
-                    cache[u] = data
-                    scan_status['progress'] = f'Verificando CTAs em {len(data.get("albums",[]))} albuns...'
-                # Verifica CTAs
-                check_ctas_for(u)
-                scan_status['progress'] = f'Concluido @{u}: {len(cta_status.get(u,{}))} albuns verificados'
-            except Exception as ex:
-                scan_status['progress'] = f'Erro: {ex}'
-                print(f'[SCAN] Erro: {ex}')
-        scan_status['running'] = False
-        scan_status['finished'] = datetime.now(timezone.utc).isoformat()
-
-    threading.Thread(target=do_scan, daemon=True).start()
-    return redirect('/admin?scan=1')
-
-@app.route('/debug-comments')
-def debug_comments():
-    """Debug: mostra texto de comentarios de um album"""
-    from flask import request
-    url = request.args.get('url', '')
-    if not url:
-        return 'Passe ?url=https://www.erome.com/a/ALBUMID'
-    try:
-        r    = requests.get(url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        # Tenta varios seletores
-        results = {}
-        for sel in ['span.comment-text', '.comment-text', '.comment-content',
-                    '.list-comment', 'div.comment', '.comments', '#comments']:
-            els = soup.select(sel)
-            if els:
-                results[sel] = [e.get_text()[:100] for e in els[:3]]
-        # Verifica se tem secao de comentarios
-        has_comments = bool(soup.select_one('[class*="comment"]'))
-        # Texto completo da pagina (primeiros 500 chars das comments)
-        page_text = soup.get_text()
-        comment_idx = page_text.lower().find('comment')
-        snippet = page_text[max(0,comment_idx-50):comment_idx+200] if comment_idx > 0 else 'nao encontrado'
-        return __import__('flask').jsonify({
-            'selectors_found': results,
-            'has_comment_section': has_comments,
-            'page_snippet': snippet,
-            'status': r.status_code,
-        })
-    except Exception as e:
-        return str(e)
-
-@app.route('/setup')
-def setup():
-    """Configura contas e CTAs via GET — acesse no navegador"""
-    from flask import request
-    users = request.args.get('accounts', '').split(',')
-    users = [u.strip() for u in users if u.strip()]
-    ctas_raw = request.args.get('ctas', '')
-
-    for u in users:
-        if u not in ACCOUNTS:
-            ACCOUNTS.append(u)
-
-    # CTAs no formato: conta1:CTA1+CTA2,conta2:CTA3
-    if ctas_raw:
-        for part in ctas_raw.split(','):
-            if ':' in part:
-                u, tags = part.split(':', 1)
-                cta_config[u.strip()] = [t.strip().upper() for t in tags.split('+')]
-
-    # Força atualização
-    threading.Thread(target=refresh_all, daemon=True).start()
-    threading.Thread(target=cta_refresh_all, daemon=True).start()
-
-    return jsonify({
-        'ok': True,
-        'accounts': ACCOUNTS,
-        'ctas': cta_config,
-        'msg': 'Configurado! Aguarde 30 segundos e acesse /data/SuaConta'
-    })
-
-
 @app.route('/data')
 def all_data():
-    """Retorna dados de todas as contas"""
     result = []
     for u in ACCOUNTS:
-        d = cache.get(u, {})
-        # Adiciona status de CTAs
+        d = dict(current_snapshot(u) or {'username': u, 'error': account_runtime.get(u, {}).get('message')})
         d['ctaStatus'] = cta_status.get(u, {})
         d['ctas']      = cta_config.get(u, [])
         result.append(d)
     return jsonify(result)
 
-
 @app.route('/data/<username>')
 def account_data(username):
-    """Retorna dados de uma conta específica"""
-    d = cache.get(username)
-    if not d or d.get('error'):
-        fresh = scrape_profile(username)
-        if fresh and not fresh.get('error'):
-            cache[username] = fresh
-            d = fresh
-        elif not d:
-            d = fresh  # usa mesmo com erro se nao tem cache
+    if username not in ACCOUNTS:
+        return jsonify({'error': 'conta não cadastrada'}), 404
+    d = dict(current_snapshot(username) or {})
+    d['username']    = username
+    d['viewsToday']  = get_views_today(username)
+    d['ctaStatus']   = cta_status.get(username, {})
+    d['ctas']        = cta_config.get(username, [])
+    gone = [v for v in cta_status.get(username, {}).values() if not v.get('ok') and v.get('foundCta')]
+    d['ctaAlert']    = len(gone)
+    d['checkedAt']   = now_iso()
+    return jsonify(d)
 
-    # Calcula views de hoje (diferença entre cache atual e cache de 24h atrás)
-    hist = view_history.get(username, [])
-    views_today = None
-    if hist and d and not d.get('error'):
-        now_ts = time.time()
-
-        # Tenta pegar snapshot de 24h atrás
-        best   = None
-        best_d = float('inf')
-        for entry in hist:
-            diff = abs(now_ts - entry['ts'] - 86400)
-            if diff < best_d:
-                best_d = diff
-                best   = entry
-
-        if best and best_d < 7200:
-            # Tem dados de 24h atrás — calcula normalmente
-            views_today = max(0, d['totalViews'] - best['views'])
-        elif len(hist) >= 2:
-            # Ainda não tem 24h — usa o snapshot mais antigo disponível (precisa ter pelo menos 2 pontos)
-            oldest = min(hist, key=lambda x: x['ts'])
-            age_h  = (now_ts - oldest['ts']) / 3600
-            if age_h >= 0.25 and oldest['views'] != d['totalViews']:
-                views_today = max(0, d['totalViews'] - oldest['views'])
-        # Se só tem 1 ponto de histórico (acabou de reiniciar), deixa None pra mostrar "coletando dados"
-
-    # Calcula alerta de CTA
-    st         = cta_status.get(username, {})
-    gone       = [v for v in st.values() if not v.get('ok') and v.get('foundCta') not in (None,'None','--')]
-    cta_alert  = len(gone)  # quantos CTAs sumiram
-
-    result = dict(d)
-    result['viewsToday'] = views_today
-    result['ctaStatus']  = st
-    result['ctas']       = cta_config.get(username, [])
-    result['ctaAlert']   = cta_alert
-    # Sempre mostra horário atual como "checkedAt" para o widget saber que está vivo
-    result['checkedAt']  = datetime.now(timezone.utc).isoformat()
-    return jsonify(result)
-
-
-@app.route('/accounts', methods=['POST'])
-def set_accounts():
-    """Define quais contas monitorar"""
-    from flask import request
-    body = request.json or {}
-    users = body.get('accounts', [])
+@app.route('/setup')
+def setup():
+    users = [u.strip() for u in request.args.get('accounts', '').split(',') if u.strip()]
+    ctas_raw = request.args.get('ctas', '')
     for u in users:
         if u not in ACCOUNTS:
             ACCOUNTS.append(u)
-    # Atualiza CTAs se fornecidos
+    if ctas_raw:
+        for part in ctas_raw.split(','):
+            if ':' in part:
+                u, tags = part.split(':', 1)
+                cta_config[u.strip()] = [t.strip().upper() for t in tags.split('+')]
+    save_data()
+    threading.Thread(target=refresh_all, daemon=True).start()
+    return jsonify({'ok': True, 'accounts': ACCOUNTS, 'ctas': cta_config,
+                     'msg': 'Configurado! Aguarde e acesse /data/SuaConta ou /admin'})
+
+@app.route('/accounts', methods=['POST'])
+def set_accounts():
+    body = request.json or {}
+    for u in body.get('accounts', []):
+        if u not in ACCOUNTS:
+            ACCOUNTS.append(u)
     if 'ctas' in body:
         for u, ctas in body['ctas'].items():
             cta_config[u] = ctas
-    # Força atualização imediata
+    save_data()
     threading.Thread(target=refresh_all, daemon=True).start()
     return jsonify({'ok': True, 'accounts': ACCOUNTS})
 
-
 @app.route('/ctas', methods=['POST'])
 def set_ctas():
-    """Define CTAs por conta"""
-    from flask import request
     body = request.json or {}
     for u, ctas in body.items():
         cta_config[u] = [c.upper() for c in ctas]
+    save_data()
     return jsonify({'ok': True, 'ctas': cta_config})
-
 
 @app.route('/push-cta-status', methods=['POST'])
 def push_cta_status():
-    """Recebe status dos CTAs do Tampermonkey (que ja tem acesso logado)"""
-    from flask import request
+    """Recebe status de CTA do Tampermonkey (que tem acesso logado) — continua funcionando
+    em paralelo ao servidor, caso Rafael queira usar os dois ao mesmo tempo."""
     body     = request.json or {}
-    username = body.get('username','').strip()
-    status   = body.get('status', {})  # {albumId: {ok, foundCta, title, href}}
+    username = (body.get('username') or '').strip()
+    status   = body.get('status', {})
     if username and status:
-        if username not in cta_status:
-            cta_status[username] = {}
-        # Mantém titulo e href no status
+        st   = cta_status.setdefault(username, {})
+        comm = commented.setdefault(username, {})
         for aid, v in status.items():
-            existing = cta_status[username].get(aid, {})
-            cta_status[username][aid] = {
+            existing = st.get(aid, {})
+            st[aid] = {
                 'ok':        v.get('ok', existing.get('ok', True)),
                 'foundCta':  v.get('foundCta', existing.get('foundCta')),
-                'checkedAt': v.get('checkedAt', existing.get('checkedAt', '')),
-                'title':     v.get('title') or existing.get('title',''),
-                'href':      v.get('href')  or existing.get('href',''),
+                'checkedAt': v.get('checkedAt', existing.get('checkedAt', now_iso())),
             }
-        # Atualiza lista de comentados tambem
-        if username not in commented_albums:
-            commented_albums[username] = []
-        existing_ids = {a['id'] for a in commented_albums[username]}
-        for aid, v in status.items():
-            if aid not in existing_ids:
-                commented_albums[username].append({
-                    'id': aid,
-                    'title': v.get('title',''),
-                    'href':  v.get('href',''),
-                })
+            existing_c = comm.get(aid, {})
+            comm[aid] = {
+                'at':            existing_c.get('at', now_iso()),
+                'title':         v.get('title') or existing_c.get('title', ''),
+                'href':          v.get('href')  or existing_c.get('href', ''),
+                'baselineViews': existing_c.get('baselineViews'),
+                'autoDetected':  existing_c.get('autoDetected', False),
+                'lastCta':       st[aid]['foundCta'] or existing_c.get('lastCta'),
+            }
         save_data()
-        print(f'[PUSH] Status de {len(status)} CTAs recebido de @{username}')
-    return __import__('flask').jsonify({'ok': True})
+        print(f'[PUSH] {len(status)} CTAs recebidos de @{username}')
+    return jsonify({'ok': True})
 
 @app.route('/sync-commented', methods=['POST'])
 def sync_commented():
-    """Recebe lista de álbuns comentados do script Tampermonkey"""
-    from flask import request
     body     = request.json or {}
-    username = body.get('username', '').strip()
+    username = (body.get('username') or '').strip()
     albums   = body.get('albums', [])
     if username and albums:
-        commented_albums[username] = albums
-        # Limpa status antigo para evitar falsos positivos
+        comm = commented.setdefault(username, {})
+        for a in albums:
+            aid = a.get('id')
+            if not aid:
+                continue
+            existing = comm.get(aid, {})
+            comm[aid] = {
+                'at':            existing.get('at', now_iso()),
+                'title':         a.get('title', '') or existing.get('title', ''),
+                'href':          a.get('href', '')  or existing.get('href', ''),
+                'baselineViews': existing.get('baselineViews'),
+                'autoDetected':  existing.get('autoDetected', False),
+                'lastCta':       existing.get('lastCta'),
+            }
         cta_status[username] = {}
         save_data()
-        print(f'[SYNC] {len(albums)} albuns recebidos de @{username} — status resetado')
-        threading.Thread(target=cta_refresh_all, daemon=True).start()
-    return __import__('flask').jsonify({'ok': True, 'synced': len(albums)})
+        threading.Thread(target=lambda: check_ctas_for(username), daemon=True).start()
+        print(f'[SYNC] {len(albums)} álbuns recebidos de @{username} — status resetado')
+    return jsonify({'ok': True, 'synced': len(albums)})
 
-@app.route('/refresh')
-def manual_refresh():
-    """Força atualização manual"""
-    from flask import request, redirect
-    threading.Thread(target=refresh_all, daemon=True).start()
-    # Se veio do admin, volta pro admin
-    ref = request.referrer or ''
-    if 'admin' in ref:
-        return redirect('/admin')
-    return jsonify({'ok': True, 'message': 'Atualização iniciada'})
+@app.route('/debug-comments')
+def debug_comments():
+    url = request.args.get('url', '')
+    if not url:
+        return 'Passe ?url=https://www.erome.com/a/ALBUMID'
+    try:
+        soup = fetch_album_comments(url)
+        results = {}
+        for sel in ['span.comment-text', '.comment-text', '.comment-content', '.list-comment', 'div.comment', '.comments', '#comments']:
+            els = soup.select(sel)
+            if els:
+                results[sel] = [e.get_text()[:100] for e in els[:3]]
+        return jsonify({'selectors_found': results, 'has_comment_section': bool(soup.select_one('[class*="comment"]'))})
+    except Exception as e:
+        return str(e)
 
-
-
+# ================================================================
+# ROTAS — Painel /admin (novo, responsivo, AJAX/JSON)
+# ================================================================
 @app.route('/admin')
-def admin():
-    # Coleta status de CTAs por album
-    gone_albums = []
-    ok_albums   = []
+def admin_page():
+    return ADMIN_HTML
+
+@app.route('/admin/api/accounts')
+def api_accounts():
+    out = []
     for u in ACCOUNTS:
-        for aid, v in cta_status.get(u, {}).items():
-            # Tenta pegar titulo do cache, depois do status, depois usa o ID
-            alb_title = next((a.get('title','') for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
-            alb_href  = next((a.get('href','')  for a in (cache.get(u) or {}).get('albums',[]) if a.get('id')==aid), '')
-            # Fallback: usa dados que vieram do Tampermonkey
-            if not alb_title: alb_title = v.get('title','')
-            if not alb_href:  alb_href  = v.get('href','')
-            # Último fallback: monta href pelo ID
-            if not alb_href and aid: alb_href = f'https://www.erome.com/a/{aid}'
-            if not alb_title: alb_title = f'Álbum {aid}'
-            entry = {'user':u,'aid':aid,'title':alb_title,'href':alb_href,
-                     'ok':v.get('ok'),'foundCta':v.get('foundCta','--'),'checkedAt':str(v.get('checkedAt',''))[:16]}
-            # Só mostra SUMIU se foundCta era válido antes (não None/None)
-            if not v.get('ok') and v.get('foundCta') not in (None, 'None', '--', 'null'):
-                gone_albums.append(entry)
-            elif v.get('ok'):
-                ok_albums.append(entry)
+        rt = account_runtime.get(u, {})
+        state = rt.get('state') or ('ok' if current_snapshot(u) else 'none')
+        out.append({'username': u, 'state': state, 'message': rt.get('message', '')})
+    return jsonify(out)
 
-    def alb_row(e, gone=False):
-        col  = '#ff4466' if gone else '#59E38A'
-        icon = 'SUMIU' if gone else 'OK'
-        t    = e['title'][:55]+'...' if len(e['title'])>55 else e['title']
-        link = ('<a href="' + e['href'] + '" target="_blank" style="color:' + col + ';text-decoration:none">' + t + '</a>') if e['href'] else t
-        return ('<div style="padding:12px 0;border-bottom:1px solid #111">'
-            + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">'
-            + '<span style="background:' + ('#2e0008' if gone else '#0d2e1a') + ';color:' + col + ';font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px">' + icon + '</span>'
-            + link
-            + '</div>'
-            + '<div style="font-size:11px;color:#555">@' + e['user'] + ' - CTA: ' + str(e['foundCta']) + ' - ' + e['checkedAt'] + '</div>'
-            + '</div>')
+@app.route('/admin/api/dashboard/<username>')
+def api_dashboard(username):
+    if username not in ACCOUNTS:
+        return jsonify({'error': 'conta não cadastrada'}), 404
+    return jsonify(build_dashboard_payload(username))
 
-    gone_html = ''.join(alb_row(e,True) for e in gone_albums) or '<div style="color:#444;font-size:13px;padding:12px 0">Nenhum CTA removido detectado.</div>'
-    ok_html   = ''.join(alb_row(e,False) for e in ok_albums[:10]) or '<div style="color:#444;font-size:13px;padding:12px 0">Aguardando verificacao...</div>'
-
-    # Tags de CTA
-    tags_html = ''
-    for u in ACCOUNTS:
-        ctas = cta_config.get(u, [])
-        tags = ''.join(
-            '<span style="display:inline-flex;align-items:center;gap:6px;background:#0a0a0a;border:1px solid #ff224430;border-radius:20px;padding:5px 14px;margin:3px">'
-            + '<span style="font-size:13px;color:#fff;font-family:monospace">' + cta + '</span>'
-            + '<a href="/admin/remove-cta?account=' + u + '&cta=' + cta + '" style="color:#ff224466;text-decoration:none;font-size:15px;line-height:1;margin-left:4px">x</a>'
-            + '</span>'
-            for cta in ctas
-        )
-        tags_html += '<div style="margin-bottom:14px"><div style="font-size:11px;color:#ff224488;text-transform:uppercase;letter-spacing:.08em;font-weight:600;margin-bottom:8px">@' + u + '</div><div>' + (tags if tags else '<span style="color:#333;font-size:12px">Nenhum CTA cadastrado</span>') + '</div></div>'
-
-    alert = ''
-    if gone_albums:
-        alert = '<div style="background:#1a0008;border:1px solid #ff2244;border-radius:10px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#ff8899">Atencao: ' + str(len(gone_albums)) + ' album(ns) com CTA removido!</div>'
-
-    accs_html = ''
-    for u in ACCOUNTS:
-        accs_html += ('<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #111">'
-            + '<span style="color:#ff2244;font-weight:600;font-size:14px">@' + u + '</span>'
-            + '<a href="/remove?account=' + u + '" style="color:#ff224455;text-decoration:none;font-size:12px">Remover conta</a>'
-            + '</div>')
-
-    # Build admin page
-    no_account = not ACCOUNTS
-    main_account = ACCOUNTS[0] if ACCOUNTS else ''
-
-    # Formulário de adicionar conta — sempre visível, mesmo com contas existentes,
-    # pra dar pra cadastrar várias contas sem precisar remover a atual primeiro.
-    acc_form = """
-        <form action="/admin/add" method="POST">
-            <div class="row">
-                <input name="account" placeholder="Username (ex: ModoNoturnoBR)" required>
-                <button type="submit" class="btn">+ Adicionar conta</button>
-            </div>
-            <div class="hint">Digite apenas o username sem @</div>
-        </form>"""
-
-    if no_account:
-        acc_section = '<div style="color:#444;font-size:13px;margin-bottom:14px">Nenhuma conta cadastrada ainda.</div>' + acc_form
-    else:
-        acc_section = accs_html + '<div style="margin-top:14px">' + acc_form + '</div>'
-
-    if no_account:
-        cta_section = '<div style="color:#444;font-size:13px">Adicione uma conta primeiro.</div>'
-    else:
-        # Seletor de conta no formulário de CTA — antes ficava fixo na primeira
-        # conta da lista, então contas adicionadas depois nunca conseguiam CTA.
-        acc_options = ''.join('<option value="' + u + '">@' + u + '</option>' for u in ACCOUNTS)
-        cta_form = (
-            '<form action="/admin/add-cta" method="POST" style="margin-top:12px">' +
-            '<div class="row">' +
-            '<select name="account" style="background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;outline:none">' + acc_options + '</select>' +
-            '<input name="cta" placeholder="Palavra-chave (ex: NEZBRASIL)" required style="text-transform:uppercase">' +
-            '<button type="submit" class="btn">+ Adicionar CTA</button>' +
-            '</div>' +
-            '<div class="hint">Escolha a conta no menu, adicione um CTA por vez. Clique no x para remover. Use quando mudar seu CTA no Telegram.</div>' +
-            '</form>'
-        )
-        cta_section = tags_html + cta_form
-
-    # Progress bar
-    if scan_status.get('running'):
-        prog_pct = scan_status.get('pct', 0)
-        prog_txt = scan_status.get('progress', 'Escaneando...')
-        progress_bar = f'''<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:12px 16px;margin-bottom:16px">
-            <div style="display:flex;justify-content:space-between;margin-bottom:8px">
-                <span style="font-size:12px;color:#22cc55;font-weight:600">⏳ {prog_txt}</span>
-                <span style="font-size:12px;color:#22cc5588">{prog_pct}%</span>
-            </div>
-            <div style="background:#0a1a10;border-radius:6px;height:6px;overflow:hidden">
-                <div style="background:#22cc55;height:100%;width:{prog_pct}%;transition:width .3s;border-radius:6px"></div>
-            </div>
-            <div style="font-size:10px;color:#22cc5566;margin-top:6px">Atualiza automaticamente...</div>
-            <meta http-equiv="refresh" content="3">
-        </div>'''
-    elif scan_status.get('finished') and scan_status.get('progress'):
-        progress_bar = f'''<div style="background:#0d2e1a;border:1px solid #22cc5540;border-radius:10px;padding:12px 16px;margin-bottom:16px">
-            <span style="font-size:12px;color:#22cc55">✅ {scan_status["progress"]}</span>
-        </div>'''
-    else:
-        progress_bar = ''
-
-    html = """<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Erome Analytics</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,sans-serif;background:#0a0a0a;color:#f0f0f0;padding:20px;max-width:660px;margin:0 auto}
-h1{color:#fff;font-size:18px;font-weight:700;margin-bottom:16px}
-h1 span{color:#ff2244}
-.sec{margin-bottom:22px}
-.sec-title{font-size:10px;font-weight:600;color:#ff224466;text-transform:uppercase;letter-spacing:.1em;margin-bottom:10px}
-.card{background:#111;border:1px solid #ff224418;border-radius:12px;padding:16px}
-.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-input{background:#0a0a0a;border:1px solid #ff224430;border-radius:8px;color:#fff;padding:9px 12px;font-size:13px;flex:1;min-width:120px;outline:none}
-input:focus{border-color:#ff2244}
-input::placeholder{color:#2a2a2a}
-.btn{background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:8px;color:#fff;padding:9px 18px;cursor:pointer;font-size:13px;font-weight:700;white-space:nowrap}
-.btn:hover{filter:brightness(1.1)}
-.btn-sm{background:#111;border:1px solid #ff224430;border-radius:8px;color:#ff2244;padding:6px 14px;cursor:pointer;font-size:12px;text-decoration:none;display:inline-block}
-.hint{font-size:11px;color:#333;margin-top:8px;line-height:1.5}
-.topbar{display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap}
-</style>
-</head>
-<body>
-<h1>Erome <span>Analytics</span></h1>
-<div class="topbar">
-<a href="/admin" class="btn-sm">Atualizar pagina</a>
-<a href="/refresh" class="btn-sm">Forcar refresh dados</a>
-<a href="/scan-page" class="btn-sm" style="background:#0d2e1a;border-color:#22cc5540;color:#22cc55">🔍 Escanear CTAs agora</a>
-</div>
-""" + progress_bar + """
-
-""" + alert + """
-<div class="sec">
-<div class="sec-title">Minha conta</div>
-<div class="card">""" + acc_section + """</div>
-</div>
-
-<div class="sec">
-<div class="sec-title">Meus CTAs</div>
-<div class="card">""" + cta_section + """</div>
-</div>
-
-<div class="sec">
-<div class="sec-title">Albums com CTA removido</div>
-<div class="card">""" + gone_html + """</div>
-</div>
-
-<div class="sec">
-<div class="sec-title">Albums com CTA presente (ultimos 10)</div>
-<div class="card">""" + ok_html + """</div>
-</div>
-
-<div style="font-size:10px;color:#1e1e1e;margin-top:16px;text-align:center">
-Dados: 15min - CTAs: 10min - <a href="/" style="color:#222">API JSON</a>
-</div>
-</body>
-</html>"""
-    return html
-
-
-@app.route('/admin/add', methods=['POST'])
-def admin_add():
-    from flask import request, redirect
-    u    = request.form.get('account','').strip()
-    craw = request.form.get('ctas','').strip()
-    if u and u not in ACCOUNTS:
-        ACCOUNTS.append(u)
-    if craw and u:
-        cta_config[u] = [x.strip().upper() for x in craw.split(',') if x.strip()]
-    threading.Thread(target=refresh_all, daemon=True).start()
-    return redirect('/admin')
-
-@app.route('/admin/add-cta', methods=['POST'])
-def admin_add_cta():
-    from flask import request, redirect
-    u   = request.form.get('account','').strip()
-    cta = request.form.get('cta','').strip().upper()
-    if u and cta:
-        if u not in cta_config: cta_config[u] = []
-        if cta not in cta_config[u]: cta_config[u].append(cta)
+@app.route('/admin/api/add-account', methods=['POST'])
+def api_add_account():
+    body = request.json or {}
+    u = (body.get('username') or '').strip().lstrip('@').replace('/', '')
+    if not u:
+        return jsonify({'ok': False, 'msg': 'Digite um username'}), 400
+    if u.lower() in [a.lower() for a in ACCOUNTS]:
+        return jsonify({'ok': False, 'msg': 'Já adicionada'}), 400
+    ACCOUNTS.append(u)
     save_data()
-    threading.Thread(target=cta_refresh_all, daemon=True).start()
-    return redirect('/admin')
+    threading.Thread(target=refresh_account, args=(u,), daemon=True).start()
+    return jsonify({'ok': True, 'username': u})
 
-@app.route('/admin/remove-cta')
-def admin_remove_cta():
-    from flask import request, redirect
-    u   = request.args.get('account','').strip()
-    cta = request.args.get('cta','').strip()
+@app.route('/admin/api/remove-account', methods=['POST'])
+def api_remove_account():
+    body = request.json or {}
+    u = body.get('username')
+    if u in ACCOUNTS:
+        ACCOUNTS.remove(u)
+        for d in (snapshots, hourly_snaps, deleted, viral_streak, commented, daily_history, cta_hourly_agg, cta_status, cta_config):
+            d.pop(u, None)
+        account_runtime.pop(u, None)
+        save_data()
+    return jsonify({'ok': True})
+
+@app.route('/admin/api/refresh', methods=['POST'])
+def api_refresh():
+    body = request.json or {}
+    u = body.get('username')
+    if u:
+        threading.Thread(target=refresh_account, args=(u,), daemon=True).start()
+    else:
+        threading.Thread(target=refresh_all, daemon=True).start()
+    return jsonify({'ok': True})
+
+@app.route('/admin/api/mark-commented', methods=['POST'])
+def api_mark_commented():
+    body = request.json or {}
+    u, aid = body.get('username'), body.get('id')
+    if not u or not aid:
+        return jsonify({'ok': False}), 400
+    mark_commented(u, aid, body.get('title', ''), body.get('href', ''), body.get('views'))
+    save_data()
+    return jsonify({'ok': True})
+
+@app.route('/admin/api/unmark-commented', methods=['POST'])
+def api_unmark_commented():
+    body = request.json or {}
+    u, aid = body.get('username'), body.get('id')
+    if u and aid:
+        unmark_commented(u, aid)
+        save_data()
+    return jsonify({'ok': True})
+
+@app.route('/admin/api/add-cta', methods=['POST'])
+def api_add_cta():
+    body = request.json or {}
+    u, cta = body.get('username'), (body.get('cta') or '').strip().upper()
+    if not u or not cta:
+        return jsonify({'ok': False}), 400
+    lst = cta_config.setdefault(u, [])
+    if cta not in lst:
+        lst.append(cta)
+    save_data()
+    return jsonify({'ok': True, 'ctas': lst})
+
+@app.route('/admin/api/remove-cta', methods=['POST'])
+def api_remove_cta():
+    body = request.json or {}
+    u, cta = body.get('username'), body.get('cta')
     if u in cta_config and cta in cta_config[u]:
         cta_config[u].remove(cta)
-    save_data()
-    return redirect('/admin')
+        save_data()
+    return jsonify({'ok': True})
 
+@app.route('/admin/api/scan', methods=['POST'])
+def api_scan():
+    body = request.json or {}
+    u = body.get('username')
+    if not u:
+        return jsonify({'ok': False}), 400
+    threading.Thread(target=scan_all_albums, args=(u,), daemon=True).start()
+    return jsonify({'ok': True})
 
-# ── INICIA O LOOP DE FUNDO ───────────────────────────────────────
-# Precisa estar aqui fora (e não dentro de um "if __name__ == '__main__'"),
-# porque no Railway é o gunicorn que importa este módulo — ele nunca
-# executa "python app.py" diretamente, então esse bloco nunca rodaria.
-# É só essa thread que faltava: sem ela, o cache só era preenchido uma
-# vez (no primeiro request via scrape on-demand) e nunca mais atualizado.
+@app.route('/admin/api/scan-status')
+def api_scan_status():
+    return jsonify(scan_status)
+
+@app.route('/admin/api/clear-deleted', methods=['POST'])
+def api_clear_deleted():
+    body = request.json or {}
+    u = body.get('username')
+    if u:
+        deleted[u] = []
+        save_data()
+    return jsonify({'ok': True})
+
+# ================================================================
+# INICIA O LOOP DE FUNDO — precisa estar fora do "if __name__", porque
+# no Railway é o gunicorn que importa este módulo (nunca roda "python app.py"
+# diretamente, então esse bloco nunca executaria se estivesse só lá dentro).
+# ================================================================
 threading.Thread(target=background_loop, daemon=True).start()
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
