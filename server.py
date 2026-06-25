@@ -326,6 +326,19 @@ def scrape_profile(username, progress_cb=None, status_cb=None):
             page += 1
             time.sleep(0.6)
 
+        # Confere contra o total que o próprio Erome informa no topo do perfil
+        # (album_count). Se leu MUITO menos do que isso, é sinal de que alguma página
+        # da paginação falhou silenciosamente (sem dar erro de rede, só não achou os
+        # elementos esperados) — não significa que os álbuns faltantes foram excluídos.
+        # Antes isso virava um "sucesso parcial" e acionava falso alarme de exclusão.
+        # 85% de margem cobre reposts (que são descartados de propósito) sem mascarar
+        # uma paginação genuinamente incompleta.
+        if album_count and len(albums) < album_count * 0.85:
+            raise Exception(
+                f'Paginação incompleta: leu {len(albums)} álbuns mas o perfil informa {album_count} '
+                f'— provável falha silenciosa numa página intermediária'
+            )
+
         return {
             'username':   username,
             'avatar':     avatar,
@@ -375,23 +388,47 @@ def snap_of_24h(u):
             best_diff, best = diff, snap
     return best if best_diff < 2 * 3600 else None
 
+pending_deleted = {}  # {username: {albumId: {title, views}}} — "suspeitos" aguardando confirmação no próximo ciclo
+
 def detect_deleted(u, curr, prev):
     if not prev or not prev.get('albums'):
         return
-    ids  = {a['id'] for a in curr.get('albums', [])}
-    gone = [a for a in prev['albums'] if a['id'] not in ids]
-    if not gone:
-        return
+    curr_ids = {a['id'] for a in curr.get('albums', [])}
+    prev_map = {a['id']: a for a in prev.get('albums', [])}
+    gone_now = [a for aid, a in prev_map.items() if aid not in curr_ids]
+
     log      = deleted.setdefault(u, [])
     existing = {d['id'] for d in log}
     comm     = commented.get(u, {})
-    for a in gone:
-        if a['id'] in existing:
+    pending  = pending_deleted.setdefault(u, {})
+
+    # Confirma como deletado quem JÁ estava suspeito desde o ciclo anterior E continua
+    # ausente agora. Uma única leitura com falha pontual (ex: 1 página de paginação que
+    # não carregou) não é mais suficiente pra logar como deletado — precisa sumir 2 vezes
+    # seguidas. Isso é o que estava causando os álbuns antigos reaparecendo na aba
+    # Deletados pouco depois de limpar: uma leitura incompleta isolada já bastava.
+    confirmed_ids = set()
+    for aid in list(pending.keys()):
+        if aid in curr_ids:
+            del pending[aid]  # voltou a aparecer — era leitura incompleta, falso alarme
             continue
-        had_cta = a['id'] in comm
-        log.insert(0, {'id': a['id'], 'title': a['title'], 'views': a['views'], 'at': now_iso(), 'hadCta': had_cta})
+        if aid in existing:
+            del pending[aid]
+            continue
+        info = pending.pop(aid)
+        had_cta = aid in comm
+        log.insert(0, {'id': aid, 'title': info['title'], 'views': info['views'], 'at': now_iso(), 'hadCta': had_cta})
+        confirmed_ids.add(aid)
         if had_cta:
-            print(f'[DELETED] Vídeo com CTA deletado em @{u}: {a["title"][:50]}')
+            print(f'[DELETED] Vídeo com CTA deletado (confirmado em 2 ciclos) em @{u}: {info["title"][:50]}')
+
+    # Marca os que desapareceram NESTE ciclo como suspeitos — só confirma se sumirem de
+    # novo no próximo ciclo também.
+    for a in gone_now:
+        if a['id'] in existing or a['id'] in confirmed_ids:
+            continue
+        pending.setdefault(a['id'], {'title': a['title'], 'views': a['views']})
+
     if len(log) > 500:
         del log[500:]
 
@@ -1399,7 +1436,7 @@ def api_remove_account():
     u = body.get('username')
     if u in ACCOUNTS:
         ACCOUNTS.remove(u)
-        for d in (snapshots, hourly_snaps, deleted, viral_streak, commented, daily_history, cta_hourly_agg, cta_status, cta_config):
+        for d in (snapshots, hourly_snaps, deleted, viral_streak, commented, daily_history, cta_hourly_agg, cta_status, cta_config, pending_deleted):
             d.pop(u, None)
         account_runtime.pop(u, None)
         save_data()
