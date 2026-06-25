@@ -687,6 +687,11 @@ function renderCTAs(d){
       </div>
       <div class="hint" style="margin-top:10px">💡 O sistema verifica se essas palavras aparecem nos comentários dos vídeos marcados. Se sumir → alerta imediato.</div>
     </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-lbl" style="margin-bottom:10px">🔔 Notificações no Telegram</div>
+      <div class="hint" style="margin-bottom:12px">Avisa no Telegram quando um CTA sumir, um vídeo viralizar de verdade (confirmado) ou um vídeo comentado for deletado. Configure <code>TELEGRAM_BOT_TOKEN</code> e <code>TELEGRAM_CHAT_ID</code> no Railway, depois testa aqui.</div>
+      <button id="btn-test-telegram" class="btn-ghost" style="width:auto;padding:9px 16px">📨 Testar notificação</button>
+    </div>
     ${goneHtml}
   `;
 }
@@ -748,6 +753,19 @@ function bindBodyEvents(d){
   });
   document.getElementById('btn-scan')?.addEventListener('click', () => doScan(activeAcc));
   document.getElementById('btn-clear-del')?.addEventListener('click', () => doClearDeleted(activeAcc));
+  document.getElementById('btn-test-telegram')?.addEventListener('click', async (ev) => {
+    const btn = ev.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Enviando...';
+    const res = await api('/admin/api/test-telegram', {method: 'POST'});
+    if(res.ok){
+      toast('✅ Mensagem de teste enviada! Confere o Telegram.', true, 6000);
+    } else {
+      toast(res.msg || 'Erro ao testar — confira o token/chat id no Railway.', false, 7000);
+    }
+    btn.disabled = false;
+    btn.textContent = '📨 Testar notificação';
+  });
   const ctaAdd = () => {
     const inp = document.getElementById('cta-input');
     const v = (inp?.value || '').trim().toUpperCase();
