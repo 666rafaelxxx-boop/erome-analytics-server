@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Erome Analytics — Login</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='9' width='3' height='6' rx='1' fill='%23ff2244'/%3E%3Crect x='6.5' y='5' width='3' height='10' rx='1' fill='%23ff2244'/%3E%3Crect x='12' y='1' width='3' height='14' rx='1' fill='%23ff2244'/%3E%3C/svg%3E">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+@keyframes fadein{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes glow{0%,100%{box-shadow:0 0 40px #ff224418,0 20px 60px rgba(0,0,0,.6)}50%{box-shadow:0 0 60px #ff224430,0 20px 60px rgba(0,0,0,.6)}}
+
+html,body{background:#0a0a0a;color:#f0f0f0;font-family:Inter,-apple-system,sans-serif;
+  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+
+#card{width:min(380px,100%);background:linear-gradient(155deg,#131313,#0d0d0d);
+  border:1px solid #ff224430;border-radius:16px;padding:36px 30px;text-align:center;
+  animation:fadein .35s ease, glow 4s ease-in-out infinite}
+
+.logo-row{display:flex;align-items:center;justify-content:center;gap:9px;margin-bottom:6px}
+.logo-mark{width:22px;height:22px}
+.logo-mark svg{width:100%;height:100%}
+.logo-row span{font-size:19px;font-weight:700;color:#fff;letter-spacing:.01em}
+.logo-row span b{color:#ff2244;font-weight:700}
+#sub{font-size:12px;color:#555;margin-bottom:28px}
+
+.field{margin-bottom:14px;text-align:left}
+.field label{display:block;font-size:10px;font-weight:600;color:#ff224488;
+  text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.field input{width:100%;background:#0a0a0a;border:1px solid #ff224430;border-radius:9px;
+  color:#f0f0f0;font-size:15px;padding:12px 14px;font-family:Inter,sans-serif;outline:none;
+  transition:border-color .15s;box-sizing:border-box}
+.field input:focus{border-color:#ff2244;box-shadow:0 0 0 3px #ff224418}
+.field input::placeholder{color:#2a2a2a}
+
+#btn{width:100%;background:linear-gradient(135deg,#ff2244,#880020);border:none;border-radius:9px;
+  color:#fff;font-size:14px;font-weight:700;padding:13px;cursor:pointer;font-family:Inter,sans-serif;
+  margin-top:10px;transition:filter .15s,opacity .15s;display:flex;align-items:center;
+  justify-content:center;gap:9px}
+#btn:hover{filter:brightness(1.12)}
+#btn:disabled{opacity:.75;cursor:default}
+
+.spin{width:15px;height:15px;border-radius:50%;border:2px solid rgba(255,255,255,.3);
+  border-top-color:#fff;animation:spin .6s linear infinite;flex-shrink:0;display:none}
+.check{display:none}
+
+#err{color:#ff5577;font-size:12px;margin-top:14px;min-height:14px;animation:fadein .2s ease}
+#hint{font-size:11px;color:#2a2a2a;margin-top:22px;line-height:1.6}
+</style>
+</head>
+<body>
+<div id="card">
+  <div class="logo-row">
+    <span class="logo-mark"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="9" width="3" height="6" rx="1" fill="#ff2244"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#ff2244"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#ff2244"/></svg></span>
+    <span>Erome <b>Analytics</b></span>
+  </div>
+  <div id="sub">Acesso restrito — entre com suas credenciais</div>
+
+  <form id="form">
+    <div class="field">
+      <label>Usuário</label>
+      <input id="user" type="text" placeholder="seu usuário" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+    </div>
+    <div class="field">
+      <label>Senha</label>
+      <input id="pass" type="password" placeholder="sua senha" autocomplete="current-password" required>
+    </div>
+    <button id="btn" type="submit">
+      <span class="spin" id="spin"></span>
+      <span class="check" id="check">✓</span>
+      <span id="btn-label">Entrar</span>
+    </button>
+  </form>
+  <div id="err"></div>
+  <div id="hint">Erome Analytics · painel privado</div>
+</div>
+
+<script>
+const form  = document.getElementById('form');
+const btn   = document.getElementById('btn');
+const spin  = document.getElementById('spin');
+const check = document.getElementById('check');
+const label = document.getElementById('btn-label');
+const err   = document.getElementById('err');
+
+form.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const username = document.getElementById('user').value.trim();
+  const password = document.getElementById('pass').value;
+  if (!username || !password) return;
+
+  err.textContent = '';
+  btn.disabled = true;
+  spin.style.display = 'inline-block';
+  check.style.display = 'none';
+  label.textContent = 'Entrando...';
+
+  try {
+    const r = await fetch('/admin/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password}),
+    });
+    const res = await r.json();
+    if (res.ok) {
+      spin.style.display = 'none';
+      check.style.display = 'inline-block';
+      label.textContent = 'Tudo certo! Carregando...';
+      setTimeout(() => { window.location.href = '/admin'; }, 450);
+    } else {
+      spin.style.display = 'none';
+      btn.disabled = false;
+      label.textContent = 'Entrar';
+      err.textContent = res.msg || 'Usuário ou senha incorretos.';
+      document.getElementById('pass').value = '';
+      document.getElementById('pass').focus();
+    }
+  } catch (e) {
+    spin.style.display = 'none';
+    btn.disabled = false;
+    label.textContent = 'Entrar';
+    err.textContent = 'Erro de conexão — tenta de novo.';
+  }
+});
+
+document.getElementById('user').focus();
+</script>
+</body>
+</html>
