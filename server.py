@@ -476,6 +476,12 @@ def detect_deleted(u, curr, prev):
                 f'🗑️ <b>VÍDEO COM CTA DELETADO</b>\n@{u}\n"{info["title"][:60]}"\n'
                 f'Esse post tinha seu link comentado e saiu do ar.'
             )
+        else:
+            print(f'[DELETED] Vídeo deletado (confirmado em 2 ciclos) em @{u}: {info["title"][:50]}')
+            send_telegram(
+                f'🗑️ <b>Vídeo deletado</b>\n@{u}\n"{info["title"][:60]}"\n'
+                f'+{_fmt_views(info["views"])} views perdidas (não tinha CTA comentado).'
+            )
 
     # Marca os que desapareceram NESTE ciclo como suspeitos — só confirma se sumirem de
     # novo no próximo ciclo também.
@@ -1079,11 +1085,25 @@ def refresh_all():
         list(ex.map(_staggered, enumerate(accs)))
 
 def check_viral_alerts(u):
-    """Avisa exatamente no momento em que um vídeo é CONFIRMADO viral (streak chega a 3)
-    — não repete depois disso, igual ao checkViralAlerts() do userscript."""
+    """Dois momentos de aviso:
+    1) Pré-alerta (👀) na PRIMEIRA hora em que um vídeo se destaca — só serve de 'olho nele',
+       ainda não é confirmação. Só pra vídeos sem CTA ainda (senão não tem ação a tomar).
+    2) Confirmação (🎯/🔄) no momento exato em que o streak chega a 3 — igual ao
+       checkViralAlerts() do userscript.
+    Nenhum dos dois repete a cada hora — cada um dispara só uma vez por evento."""
+    standout  = get_standout(u)
     confirmed = get_confirmed_viral(u)
     streak    = viral_streak.get(u, {})
     comm      = commented.get(u, {})
+
+    for a in standout:
+        if streak.get(a['id'], 0) != 1 or a['id'] in comm:
+            continue  # só na 1a hora de destaque, e só se ainda não tem CTA
+        send_telegram(
+            f'👀 <b>Começando a se destacar</b>\n@{u}\n"{a["title"][:60]}"\n'
+            f'+{_fmt_views(a["delta"])} na última hora — de olho, ainda sem confirmar.'
+        )
+
     for a in confirmed:
         if streak.get(a['id'], 0) != 3:
             continue  # só dispara no ciclo exato em que confirma — evita repetir toda hora
@@ -1118,14 +1138,65 @@ def cta_refresh_all():
         time.sleep(1)
     save_data()
 
+def get_views_gained_window(u, hours, id_set=None):
+    """Views ganhas numa janela de N horas — total (id_set=None) ou só de um conjunto de
+    IDs (ex: só os vídeos com CTA). Usa hourly_snaps como referência, com fallback pros
+    snapshots de 15-20min se ainda não tiver histórico horário suficiente."""
+    curr = current_snapshot(u)
+    snap = get_hourly_snap_of(u, hours) or get_snap_hours_ago(u, hours)
+    if not curr or not snap:
+        return None
+    if id_set is None:
+        return max(0, curr['totalViews'] - snap.get('totalViews', curr['totalViews']))
+    prev_map = {a['id']: a['views'] for a in snap.get('albums', [])}
+    total = 0
+    for a in curr.get('albums', []):
+        if a['id'] not in id_set:
+            continue
+        pv = prev_map.get(a['id'], 0)
+        if a['views'] > pv:
+            total += a['views'] - pv
+    return total
+
+def build_account_digest_section(u, hours=3):
+    comm    = commented.get(u, {})
+    cta_ids = set(comm.keys())
+    gain    = get_views_gained_window(u, hours, id_set=None)
+    if gain is None:
+        return None  # conta muito nova, ainda sem histórico de algumas horas
+
+    lines = [f'<b>@{u}</b>', f'Views ganhas: +{_fmt_views(gain)}']
+    if cta_ids:
+        gain_cta = get_views_gained_window(u, hours, id_set=cta_ids)
+        lines.append(f'Views dos vídeos com CTA: +{_fmt_views(gain_cta)}')
+
+    seen, opportunities = set(), []
+    for a in get_confirmed_viral(u) + get_standout(u):
+        if a['id'] in comm or a['id'] in seen:
+            continue
+        seen.add(a['id'])
+        opportunities.append(a)
+    opportunities.sort(key=lambda a: -a['delta'])
+    for a in opportunities[:3]:
+        lines.append(f'🔥 "{a["title"][:45]}" bombando — +{_fmt_views(a["delta"])}/h, ainda sem CTA')
+
+    return '\n'.join(lines)
+
+def send_digest_all(hours=3):
+    sections = [s for s in (build_account_digest_section(u, hours) for u in list(ACCOUNTS)) if s]
+    if not sections:
+        return
+    send_telegram(f'📊 <b>Resumo das últimas {hours}h</b>\n\n' + '\n\n'.join(sections))
+
 # ================================================================
 # LOOP EM BACKGROUND — 3 timers, igual ao userscript (15-20min / 1h / 10min)
 # ================================================================
 def background_loop():
-    last_data, last_cta, last_viral = 0, 0, 0
-    DATA_INTERVAL  = 20 * 60   # 20min (margem de segurança contra bloqueio do Erome)
-    CTA_INTERVAL   = 10 * 60
-    VIRAL_INTERVAL = 60 * 60
+    last_data, last_cta, last_viral, last_digest = 0, 0, 0, 0
+    DATA_INTERVAL   = 20 * 60   # 20min (margem de segurança contra bloqueio do Erome)
+    CTA_INTERVAL    = 10 * 60
+    VIRAL_INTERVAL  = 60 * 60
+    DIGEST_INTERVAL = 3 * 60 * 60
     while True:
         now = time.time()
         try:
@@ -1138,6 +1209,9 @@ def background_loop():
             if now - last_viral >= VIRAL_INTERVAL:
                 viral_refresh_all()
                 last_viral = now
+            if now - last_digest >= DIGEST_INTERVAL:
+                send_digest_all()
+                last_digest = now
         except Exception as ex:
             print(f'[LOOP] Erro inesperado: {ex}')
         time.sleep(30)
