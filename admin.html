@@ -689,7 +689,9 @@ function renderCTAs(d){
     </div>
     <div class="card" style="margin-bottom:16px">
       <div class="card-lbl" style="margin-bottom:10px">🔔 Notificações no Telegram</div>
-      <div class="hint" style="margin-bottom:12px">Avisa no Telegram quando um CTA sumir, um vídeo viralizar de verdade (confirmado) ou um vídeo comentado for deletado. Configure <code>TELEGRAM_BOT_TOKEN</code> e <code>TELEGRAM_CHAT_ID</code> no Railway, depois testa aqui.</div>
+      <div class="hint" style="margin-bottom:12px">
+        Avisa no Telegram em 4 situações: 👀 vídeo começando a se destacar (sem CTA ainda), 🎯 viral confirmado (hora de comentar), 🗑️ vídeo deletado (com ou sem CTA), e 📊 um resumo a cada 3h juntando todas as contas (views ganhas, views dos CTA, e oportunidades sem CTA). Configure <code>TELEGRAM_BOT_TOKEN</code> e <code>TELEGRAM_CHAT_ID</code> no Railway, depois testa aqui.
+      </div>
       <button id="btn-test-telegram" class="btn-ghost" style="width:auto;padding:9px 16px">📨 Testar notificação</button>
     </div>
     ${goneHtml}
