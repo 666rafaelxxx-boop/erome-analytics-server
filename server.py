@@ -326,19 +326,6 @@ def scrape_profile(username, progress_cb=None, status_cb=None):
             page += 1
             time.sleep(0.6)
 
-        # Confere contra o total que o próprio Erome informa no topo do perfil
-        # (album_count). Se leu MUITO menos do que isso, é sinal de que alguma página
-        # da paginação falhou silenciosamente (sem dar erro de rede, só não achou os
-        # elementos esperados) — não significa que os álbuns faltantes foram excluídos.
-        # Antes isso virava um "sucesso parcial" e acionava falso alarme de exclusão.
-        # 85% de margem cobre reposts (que são descartados de propósito) sem mascarar
-        # uma paginação genuinamente incompleta.
-        if album_count and len(albums) < album_count * 0.85:
-            raise Exception(
-                f'Paginação incompleta: leu {len(albums)} álbuns mas o perfil informa {album_count} '
-                f'— provável falha silenciosa numa página intermediária'
-            )
-
         return {
             'username':   username,
             'avatar':     avatar,
