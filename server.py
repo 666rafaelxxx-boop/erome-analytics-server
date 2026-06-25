@@ -244,6 +244,12 @@ def _fmt_views(n):
     if n >= 1_000:     return f'{n/1_000:.1f}K'.replace('.', ',')
     return str(n)
 
+def _title_link(title, href):
+    """Título do vídeo virando link tocável na notificação (em vez de só texto) —
+    assim dá pra ir direto pro vídeo a partir do Telegram, sem precisar abrir o painel."""
+    t = (title or 'Sem título')[:60]
+    return f'<a href="{href}">{t}</a>' if href else f'"{t}"'
+
 # ================================================================
 # HELPERS DE TEMPO / NÚMERO
 # ================================================================
@@ -921,7 +927,7 @@ def check_ctas_for(u):
             if prev and prev.get('ok') and not found:
                 print(f'[CTA] SUMIU em @{u} — {c.get("title","")[:50]}')
                 send_telegram(
-                    f'🚨 <b>CTA SUMIU DOS COMENTÁRIOS</b>\n@{u}\n"{c.get("title","")[:60]}"\n'
+                    f'🚨 <b>CTA SUMIU DOS COMENTÁRIOS</b>\n@{u}\n{_title_link(c.get("title",""), c.get("href"))}\n'
                     f'Nenhum dos seus CTAs foi encontrado — pode ter sido removido ou apagado.'
                 )
             time.sleep(0.6)
@@ -1100,7 +1106,7 @@ def check_viral_alerts(u):
         if streak.get(a['id'], 0) != 1 or a['id'] in comm:
             continue  # só na 1a hora de destaque, e só se ainda não tem CTA
         send_telegram(
-            f'👀 <b>Começando a se destacar</b>\n@{u}\n"{a["title"][:60]}"\n'
+            f'👀 <b>Começando a se destacar</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
             f'+{_fmt_views(a["delta"])} na última hora — de olho, ainda sem confirmar.'
         )
 
@@ -1110,12 +1116,12 @@ def check_viral_alerts(u):
         was_commented = a['id'] in comm
         if was_commented:
             send_telegram(
-                f'🔄 <b>RENOVAR COMENTÁRIO</b>\n@{u}\n"{a["title"][:60]}"\n'
+                f'🔄 <b>RENOVAR COMENTÁRIO</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
                 f'Já comentou antes — vale ir de novo!'
             )
         else:
             send_telegram(
-                f'🎯 <b>HORA DE COMENTAR!</b>\n@{u}\n"{a["title"][:60]}"\n'
+                f'🎯 <b>HORA DE COMENTAR!</b>\n@{u}\n{_title_link(a["title"], a.get("href"))}\n'
                 f'+{_fmt_views(a["delta"])} views na última hora — viralizando de verdade!'
             )
 
@@ -1165,10 +1171,10 @@ def build_account_digest_section(u, hours=3):
     if gain is None:
         return None  # conta muito nova, ainda sem histórico de algumas horas
 
-    lines = [f'<b>@{u}</b>', f'Views ganhas: +{_fmt_views(gain)}']
+    lines = [f'<b>@{u}</b>', f'Views ganhas nas últimas {hours}h: +{_fmt_views(gain)}']
     if cta_ids:
         gain_cta = get_views_gained_window(u, hours, id_set=cta_ids)
-        lines.append(f'Views dos vídeos com CTA: +{_fmt_views(gain_cta)}')
+        lines.append(f'Dos vídeos com CTA, nas mesmas {hours}h: +{_fmt_views(gain_cta)}')
 
     seen, opportunities = set(), []
     for a in get_confirmed_viral(u) + get_standout(u):
@@ -1178,7 +1184,7 @@ def build_account_digest_section(u, hours=3):
         opportunities.append(a)
     opportunities.sort(key=lambda a: -a['delta'])
     for a in opportunities[:3]:
-        lines.append(f'🔥 "{a["title"][:45]}" bombando — +{_fmt_views(a["delta"])}/h, ainda sem CTA')
+        lines.append(f'🔥 {_title_link(a["title"], a.get("href"))} — bombando a +{_fmt_views(a["delta"])} views/hora (ainda sem CTA)')
 
     return '\n'.join(lines)
 
