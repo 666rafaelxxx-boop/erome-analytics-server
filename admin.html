@@ -239,7 +239,14 @@ function diffBadge(v){
   return {c:'fl',t:'— igual'};
 }
 const $ = sel => document.querySelector(sel);
-async function api(path, opts){ const r = await fetch(path, opts); return r.json(); }
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  if(r.status === 401){
+    window.location.href = '/admin/login';
+    return new Promise(() => {});  // nunca resolve — a página já está saindo
+  }
+  return r.json();
+}
 function toast(msg, ok, duration){
   duration = duration || 6000;
   const t = document.createElement('div');
@@ -377,11 +384,16 @@ function renderHeader(){
     <button class="hbtn" id="btn-import" title="Importar backup antigo (botão ⇩ Exportar do Tampermonkey)">⇧ Importar</button>
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="hbtn" id="btn-add">+ Conta</button>
+    <button class="hbtn" id="btn-logout" title="Sair" style="border-color:#33333360;color:#666">⏻ Sair</button>
   `;
   $('#btn-add')?.addEventListener('click', () => { addOpen = true; render(); });
   $('#btn-ref-all')?.addEventListener('click', () => doRefresh(null));
   $('#btn-import')?.addEventListener('click', () => document.getElementById('import-file').click());
   document.getElementById('import-file')?.addEventListener('change', doImportFile);
+  $('#btn-logout')?.addEventListener('click', async () => {
+    await fetch('/admin/logout', {method: 'POST'});
+    window.location.href = '/admin/login';
+  });
 }
 
 async function doImportFile(ev){
