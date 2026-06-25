@@ -13,6 +13,7 @@ import json
 import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
+from concurrent.futures import ThreadPoolExecutor
 
 # ================================================================
 # CONFIG / PERSISTÊNCIA
@@ -240,7 +241,7 @@ def _parse_album_card(el):
         return None
     return {'id': aid, 'title': title, 'href': href, 'views': views}
 
-def scrape_profile(username):
+def scrape_profile(username, progress_cb=None):
     try:
         r = fetch_with_retries(f'https://www.erome.com/{username}?t=posts', f'página 1 de @{username}')
         soup = BeautifulSoup(r.text, 'html.parser')
@@ -266,6 +267,8 @@ def scrape_profile(username):
             a = _parse_album_card(el)
             if a:
                 albums.append(a)
+        if progress_cb:
+            progress_cb(1, len(albums))
 
         has_next = bool(soup.select_one('a[rel="next"]') or soup.select('.pagination .page-item:not(.active) a[href*="page="]'))
         page = 2
@@ -278,6 +281,8 @@ def scrape_profile(username):
                 if a:
                     albums.append(a)
                     new_ones.append(a)
+            if progress_cb:
+                progress_cb(page, len(albums))
             has_next = bool(s2.select_one('a[rel="next"]') or s2.select('.pagination .page-item:not(.active) a[href*="page="]'))
             if not has_next or not new_ones:
                 break
@@ -296,6 +301,7 @@ def scrape_profile(username):
         }
     except Exception as ex:
         return {'username': username, 'error': str(ex), 'fetchedAt': now_iso(), 'albums': []}
+
 
 # ================================================================
 # SNAPSHOTS (histórico de 15-20min, base de tudo)
@@ -864,11 +870,17 @@ def refresh_account(u):
     if u in _refreshing:
         return
     _refreshing.add(u)
-    account_runtime[u] = {'state': 'loading', 'message': ''}
+    account_runtime[u] = {'state': 'loading', 'message': '', 'progress': 'Iniciando…'}
     try:
-        data = scrape_profile(u)
+        def _on_progress(page, count):
+            # Mesmo texto que o userscript já mostrava (#ea-prog) — só que agora
+            # vem do servidor via polling, pra você ver em tempo real o que está
+            # sendo lido, mesmo se o navegador estiver fechado e você abrir depois.
+            account_runtime[u]['progress'] = f'Página {page} · {count} álbuns…'
+
+        data = scrape_profile(u, progress_cb=_on_progress)
         if data.get('error'):
-            account_runtime[u] = {'state': 'error', 'message': data['error']}
+            account_runtime[u] = {'state': 'error', 'message': data['error'], 'progress': ''}
             print(f'[REFRESH] Erro @{u}: {data["error"]}')
             return
 
@@ -886,16 +898,24 @@ def refresh_account(u):
         if prev and prev.get('albumCount', 0) > data['albumCount']:
             print(f'[{u}] ⚠️ {prev["albumCount"] - data["albumCount"]} álbum(ns) removido(s)')
 
+        account_runtime[u] = {'state': 'ok', 'message': '', 'progress': ''}
         check_ctas_for(u)
-        account_runtime[u] = {'state': 'ok', 'message': ''}
         save_data()
     finally:
         _refreshing.discard(u)
 
 def refresh_all():
-    for u in list(ACCOUNTS):
-        refresh_account(u)
-        time.sleep(1)
+    # Antes era sequencial (conta por conta, esperando uma terminar pra começar a
+    # próxima) — em contas com bastante histórico isso fazia "Atualizar tudo" levar
+    # vários minutos parecendo travado. Agora atualiza várias contas em paralelo
+    # (até 4 ao mesmo tempo), bem mais rápido. O scraping de páginas DENTRO de uma
+    # mesma conta continua sequencial (é assim que a paginação funciona), só o
+    # paralelismo é ENTRE contas diferentes.
+    accs = list(ACCOUNTS)
+    if not accs:
+        return
+    with ThreadPoolExecutor(max_workers=min(4, len(accs))) as ex:
+        list(ex.map(refresh_account, accs))
 
 def viral_refresh_all():
     for u in list(ACCOUNTS):
@@ -1279,7 +1299,7 @@ def api_accounts():
     for u in ACCOUNTS:
         rt = account_runtime.get(u, {})
         state = rt.get('state') or ('ok' if current_snapshot(u) else 'none')
-        out.append({'username': u, 'state': state, 'message': rt.get('message', '')})
+        out.append({'username': u, 'state': state, 'message': rt.get('message', ''), 'progress': rt.get('progress', '')})
     return jsonify(out)
 
 @app.route('/admin/api/dashboard/<username>')
