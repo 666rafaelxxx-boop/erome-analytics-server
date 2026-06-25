@@ -217,6 +217,34 @@ HEADERS = {
 }
 
 # ================================================================
+# NOTIFICAÇÕES TELEGRAM — avisa CTA sumido / viral confirmado / deletado com CTA
+# direto no celular, sem precisar abrir o /admin. Configure TELEGRAM_BOT_TOKEN e
+# TELEGRAM_CHAT_ID nas variáveis do Railway. Sem essas duas, fica em silêncio
+# (não quebra nada, só não avisa).
+# ================================================================
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID   = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+def send_telegram(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'},
+            timeout=10,
+        )
+    except Exception as e:
+        print(f'[TELEGRAM] Erro ao enviar notificação: {e}')
+
+def _fmt_views(n):
+    if n is None:
+        return '—'
+    if n >= 1_000_000: return f'{n/1_000_000:.1f}M'.replace('.', ',')
+    if n >= 1_000:     return f'{n/1_000:.1f}K'.replace('.', ',')
+    return str(n)
+
+# ================================================================
 # HELPERS DE TEMPO / NÚMERO
 # ================================================================
 def now_iso():
@@ -444,6 +472,10 @@ def detect_deleted(u, curr, prev):
         confirmed_ids.add(aid)
         if had_cta:
             print(f'[DELETED] Vídeo com CTA deletado (confirmado em 2 ciclos) em @{u}: {info["title"][:50]}')
+            send_telegram(
+                f'🗑️ <b>VÍDEO COM CTA DELETADO</b>\n@{u}\n"{info["title"][:60]}"\n'
+                f'Esse post tinha seu link comentado e saiu do ar.'
+            )
 
     # Marca os que desapareceram NESTE ciclo como suspeitos — só confirma se sumirem de
     # novo no próximo ciclo também.
@@ -882,6 +914,10 @@ def check_ctas_for(u):
                 c['lastCta'] = found
             if prev and prev.get('ok') and not found:
                 print(f'[CTA] SUMIU em @{u} — {c.get("title","")[:50]}')
+                send_telegram(
+                    f'🚨 <b>CTA SUMIU DOS COMENTÁRIOS</b>\n@{u}\n"{c.get("title","")[:60]}"\n'
+                    f'Nenhum dos seus CTAs foi encontrado — pode ter sido removido ou apagado.'
+                )
             time.sleep(0.6)
         except Exception as ex:
             print(f'[CTA] Erro @{u}/{album_id}: {ex}')
@@ -1042,6 +1078,27 @@ def refresh_all():
     with ThreadPoolExecutor(max_workers=min(2, len(accs))) as ex:
         list(ex.map(_staggered, enumerate(accs)))
 
+def check_viral_alerts(u):
+    """Avisa exatamente no momento em que um vídeo é CONFIRMADO viral (streak chega a 3)
+    — não repete depois disso, igual ao checkViralAlerts() do userscript."""
+    confirmed = get_confirmed_viral(u)
+    streak    = viral_streak.get(u, {})
+    comm      = commented.get(u, {})
+    for a in confirmed:
+        if streak.get(a['id'], 0) != 3:
+            continue  # só dispara no ciclo exato em que confirma — evita repetir toda hora
+        was_commented = a['id'] in comm
+        if was_commented:
+            send_telegram(
+                f'🔄 <b>RENOVAR COMENTÁRIO</b>\n@{u}\n"{a["title"][:60]}"\n'
+                f'Já comentou antes — vale ir de novo!'
+            )
+        else:
+            send_telegram(
+                f'🎯 <b>HORA DE COMENTAR!</b>\n@{u}\n"{a["title"][:60]}"\n'
+                f'+{_fmt_views(a["delta"])} views na última hora — viralizando de verdade!'
+            )
+
 def viral_refresh_all():
     for u in list(ACCOUNTS):
         if not current_snapshot(u):
@@ -1050,6 +1107,7 @@ def viral_refresh_all():
             save_hourly_snap(u)
             standout = get_standout(u)
             update_viral_streak(u, standout)
+            check_viral_alerts(u)
         time.sleep(0.5)
     save_data()
     print(f'[VIRAL] refresh horário ✓ {datetime.now(TZ).strftime("%H:%M")}')
@@ -1536,6 +1594,13 @@ def api_import():
         return jsonify({'ok': False, 'msg': f'Arquivo inválido: {e}'}), 400
     result = import_legacy_export(data)
     return jsonify(result), (200 if result.get('ok') else 400)
+
+@app.route('/admin/api/test-telegram', methods=['POST'])
+def api_test_telegram():
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return jsonify({'ok': False, 'msg': 'Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID no Railway primeiro.'}), 400
+    send_telegram('✅ <b>Erome Analytics</b>\nNotificações configuradas com sucesso! Você vai receber avisos aqui de CTA sumido, vídeo viral confirmado e deleções com CTA ativo.')
+    return jsonify({'ok': True})
 
 @app.route('/admin/api/scan-status')
 def api_scan_status():
