@@ -351,10 +351,36 @@ function renderHeader(){
     <span class="logo-mark"><svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><rect x="1" y="9" width="3" height="6" rx="1" fill="#ff2244"/><rect x="6.5" y="5" width="3" height="10" rx="1" fill="#ff2244"/><rect x="12" y="1" width="3" height="14" rx="1" fill="#ff2244"/></svg></span>
     <div id="hd-title"><span class="live-dot"></span>Erome <span>Analytics</span></div>
     ${accounts.length ? '<button class="hbtn" id="btn-ref-all">↻ Atualizar tudo</button>' : ''}
+    <button class="hbtn" id="btn-import" title="Importar backup antigo (botão ⇩ Exportar do Tampermonkey)">⇧ Importar</button>
+    <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="hbtn" id="btn-add">+ Conta</button>
   `;
   $('#btn-add')?.addEventListener('click', () => { addOpen = true; render(); });
   $('#btn-ref-all')?.addEventListener('click', () => doRefresh(null));
+  $('#btn-import')?.addEventListener('click', () => document.getElementById('import-file').click());
+  document.getElementById('import-file')?.addEventListener('change', doImportFile);
+}
+
+async function doImportFile(ev){
+  const file = ev.target.files[0];
+  ev.target.value = '';
+  if(!file) return;
+  toast('Importando histórico... pode levar alguns segundos.', true, 7000);
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r = await fetch('/admin/api/import', {method:'POST', body: fd});
+    const res = await r.json();
+    if(res.ok){
+      toast(res.msg || 'Importado com sucesso!', true, 10000);
+      await loadAccounts();
+      if(activeAcc) await loadDashboard(activeAcc);
+    } else {
+      toast(res.msg || 'Erro ao importar o arquivo.', false, 9000);
+    }
+  } catch(err){
+    toast('Erro ao importar: ' + err.message, false, 9000);
+  }
 }
 
 function renderAccTabs(){
