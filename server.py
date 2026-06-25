@@ -3,7 +3,7 @@
 # histórico/CTA igual ao userscript Tampermonkey, e serve um painel /admin
 # completo e responsivo (sem precisar do navegador/PC do Rafael ligado).
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, session, redirect
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -11,7 +11,7 @@ import threading
 import re
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from concurrent.futures import ThreadPoolExecutor
 
@@ -137,22 +137,58 @@ app = Flask(__name__)
 # Configure ADMIN_USER e ADMIN_PASS nas variáveis de ambiente do Railway.
 # Sem essas duas variáveis configuradas, o /admin continua aberto (modo atual) —
 # assim nada quebra até você configurar.
+#
+# IMPORTANTE: configure também uma 3ª variável, SECRET_KEY (qualquer texto longo
+# e aleatório que só você sabe) — ela assina o cookie de sessão. Sem ela, uma
+# nova é gerada aleatoriamente a cada reinício do servidor, e isso desloga todo
+# mundo sempre que o Railway reiniciar o container.
 # ================================================================
 ADMIN_USER = os.environ.get('ADMIN_USER', '')
 ADMIN_PASS = os.environ.get('ADMIN_PASS', '')
+app.secret_key = os.environ.get('SECRET_KEY') or os.urandom(24).hex()
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+
+_LOGIN_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'login.html')
+try:
+    with open(_LOGIN_HTML_PATH, 'r', encoding='utf-8') as _f:
+        LOGIN_HTML = _f.read()
+except FileNotFoundError:
+    LOGIN_HTML = '<h1 style="color:#f44;font-family:sans-serif">login.html não encontrado — coloque-o na mesma pasta do app.py</h1>'
 
 @app.before_request
 def _check_admin_auth():
     if not request.path.startswith('/admin'):
         return  # rotas legadas (/data, /push-cta-status etc.) continuam sem login, usadas pelo Tampermonkey
+    if request.path in ('/admin/login', '/admin/logout'):
+        return  # essas duas precisam ficar acessíveis mesmo deslogado
     if not ADMIN_USER or not ADMIN_PASS:
         return  # login não configurado ainda — não bloqueia, pra não travar quem ainda não fez essa parte
-    auth = request.authorization
-    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
-        return Response(
-            'Acesso restrito — usuário e senha necessários.', 401,
-            {'WWW-Authenticate': 'Basic realm="Erome Analytics"'}
-        )
+    if session.get('authed'):
+        return  # sessão válida — segue normalmente
+    if request.path.startswith('/admin/api/'):
+        return jsonify({'ok': False, 'error': 'not_authenticated'}), 401
+    return redirect('/admin/login')
+
+@app.route('/admin/login', methods=['GET'])
+def admin_login_page():
+    return LOGIN_HTML
+
+@app.route('/admin/login', methods=['POST'])
+def admin_login_submit():
+    body = request.get_json(silent=True) or request.form
+    user = (body.get('username') or '').strip()
+    pw   = body.get('password') or ''
+    if ADMIN_USER and ADMIN_PASS and user == ADMIN_USER and pw == ADMIN_PASS:
+        session.clear()
+        session['authed'] = True
+        session.permanent = True
+        return jsonify({'ok': True})
+    return jsonify({'ok': False, 'msg': 'Usuário ou senha incorretos.'}), 401
+
+@app.route('/admin/logout', methods=['POST'])
+def admin_logout():
+    session.clear()
+    return jsonify({'ok': True})
 
 _saved          = load_data()
 ACCOUNTS        = _saved['accounts']
