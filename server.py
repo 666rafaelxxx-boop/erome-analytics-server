@@ -3,7 +3,7 @@
 # histórico/CTA igual ao userscript Tampermonkey, e serve um painel /admin
 # completo e responsivo (sem precisar do navegador/PC do Rafael ligado).
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 import requests
 from bs4 import BeautifulSoup
 import time
@@ -131,6 +131,28 @@ def save_data():
             print(f'[SAVE] Erro: {e}')
 
 app = Flask(__name__)
+
+# ================================================================
+# LOGIN DO /admin — protege o painel pra ninguém com o link acessar seus dados.
+# Configure ADMIN_USER e ADMIN_PASS nas variáveis de ambiente do Railway.
+# Sem essas duas variáveis configuradas, o /admin continua aberto (modo atual) —
+# assim nada quebra até você configurar.
+# ================================================================
+ADMIN_USER = os.environ.get('ADMIN_USER', '')
+ADMIN_PASS = os.environ.get('ADMIN_PASS', '')
+
+@app.before_request
+def _check_admin_auth():
+    if not request.path.startswith('/admin'):
+        return  # rotas legadas (/data, /push-cta-status etc.) continuam sem login, usadas pelo Tampermonkey
+    if not ADMIN_USER or not ADMIN_PASS:
+        return  # login não configurado ainda — não bloqueia, pra não travar quem ainda não fez essa parte
+    auth = request.authorization
+    if not auth or auth.username != ADMIN_USER or auth.password != ADMIN_PASS:
+        return Response(
+            'Acesso restrito — usuário e senha necessários.', 401,
+            {'WWW-Authenticate': 'Basic realm="Erome Analytics"'}
+        )
 
 _saved          = load_data()
 ACCOUNTS        = _saved['accounts']
@@ -1034,9 +1056,16 @@ def build_dashboard_payload(u):
     confirmed_pending = [a for a in confirmed_all if a['id'] not in comm]
 
     alerts = []
-    if prev and prev.get('albumCount', 0) > m['albumCount']:
+    # Antes esse alerta comparava só os 2 últimos snapshots (prev vs atual) — isso é
+    # DESCONECTADO da aba Deletados, então clicar em "Limpar" lá não fazia esse aviso
+    # sumir, e ele também podia ficar reaparecendo por várias rodadas. Agora ele usa
+    # o MESMO log persistido da aba Deletados: limpar lá também limpa aqui, e o aviso
+    # expira sozinho depois de 1h mesmo que você não entre na aba.
+    dlog = deleted.get(u, [])
+    recent_deletions = [d for d in dlog if (time.time() - iso_ts(d.get('at', ''))) < 3600]
+    if recent_deletions:
         alerts.append({'type': 'warn', 'icon': '⚠️',
-                        'text': f"{prev['albumCount'] - m['albumCount']} álbum(ns) removido(s). Veja a aba Deletados."})
+                        'text': f"{len(recent_deletions)} álbum(ns) removido(s) recentemente. Veja a aba Deletados."})
     if post_msg:
         cls = 'ok' if new_posts > 0 else ('fire' if (days_sem or 0) >= 3 else 'warn')
         alerts.append({'type': cls, 'icon': post_msg['emoji'], 'text': post_msg['msg']})
