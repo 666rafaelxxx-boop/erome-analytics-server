@@ -231,7 +231,10 @@ def send_telegram(message):
     try:
         requests.post(
             f'https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage',
-            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'},
+            json={
+                'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML',
+                'link_preview_options': {'is_disabled': True},  # sem cartão de prévia do vídeo
+            },
             timeout=10,
         )
     except Exception as e:
